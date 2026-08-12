@@ -6,7 +6,11 @@
 #include <driver/gpio.h>
 #include <esp_timer.h>
 
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+constexpr uint8_t kBacklightDefaultPercent = 40;
+#else
 constexpr uint8_t kBacklightDefaultPercent = 75;
+#endif
 constexpr uint8_t kBacklightMinPercent = 5;
 
 class Backlight {

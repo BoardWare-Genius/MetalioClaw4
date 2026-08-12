@@ -279,6 +279,12 @@ void BackgroundCaptureService::Start() {
         return;
     }
 
+    // Recording owns these always-on paths.  Starting from the UI, MCP, or at
+    // boot now has identical behavior, and Stop() can really enter low power.
+    Application::GetInstance().GetAudioService().EnableContinuousInput(true);
+    if (CameraScreen::StartBackgroundCapture() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start camera for background recording");
+    }
     CameraScreen::EnableBackgroundRecording(
         true, CONFIG_BACKGROUND_RECORDING_PHOTO_INTERVAL_MS, boot_id_);
     if (CONFIG_BACKGROUND_RECORDING_UPLOAD_URL[0] != '\0' &&
@@ -304,6 +310,8 @@ void BackgroundCaptureService::Stop() {
     }
     Application::GetInstance().GetAudioService().SetAudioInputTapCallback(nullptr);
     CameraScreen::EnableBackgroundRecording(false, 0, 0);
+    CameraScreen::StopBackgroundCapture();
+    Application::GetInstance().GetAudioService().EnableContinuousInput(false);
     // Let the writer close and publish its last partial WAV before the uploader
     // drains this recording session.  The toggle runs on its own task, so this
     // orderly shutdown never blocks LVGL or the power-key monitor.

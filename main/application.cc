@@ -493,6 +493,11 @@ void Application::Start() {
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
     audio_service_.Start();
+#if CONFIG_BACKGROUND_RECORDING
+    // BackgroundCaptureService owns the continuous microphone and camera
+    // lifetime.  Stopping recording can therefore power both paths down.
+    background_capture_service_.Start();
+#else
 #if CONFIG_ALWAYS_ON_MICROPHONE
     audio_service_.EnableContinuousInput(true);
 #endif
@@ -502,9 +507,6 @@ void Application::Start() {
         ESP_LOGE(TAG, "Failed to start always-on camera capture");
     }
 #endif
-
-#if CONFIG_BACKGROUND_RECORDING
-    background_capture_service_.Start();
 #endif
 
     AudioServiceCallbacks callbacks;

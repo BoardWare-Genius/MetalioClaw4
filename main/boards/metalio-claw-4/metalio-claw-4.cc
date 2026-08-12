@@ -1,6 +1,7 @@
 #include "application.h"
 #include "button.h"
 #include "config.h"
+#include "settings.h"
 #include "display/lv_adapter_display.h"
 #include "dual_network_board.h"
 
@@ -50,6 +51,7 @@
 #include "usb_virtual_disk.h"
 #endif
 #include "bq27220_gauge.h"
+#include "cx25601n.h"
 #include "bt_audio_codec.h"
 #if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "display/screen/bluetooth_screen/bluetooth_screen.h"
@@ -204,6 +206,30 @@ private:
             "pa_enable_delay", 2048, nullptr, 5, nullptr);
     }
 
+    void InitializeWiredCharger() {
+        esp_err_t charger_err = cx25601n_init(i2c_bus_);
+        if (charger_err != ESP_OK) {
+            ESP_LOGW(TAG, "CX25601N charger unavailable: %s",
+                     esp_err_to_name(charger_err));
+            return;
+        }
+
+        charger_err = cx25601n_enable_charge(true);
+        if (charger_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to enable CX25601N charging: %s",
+                     esp_err_to_name(charger_err));
+            return;
+        }
+
+        uint32_t charge_ma = 0;
+        uint32_t input_ma = 0;
+        const bool charge_ma_ok = cx25601n_get_ichg_ma(&charge_ma) == ESP_OK;
+        const bool input_ma_ok = cx25601n_get_iindpm_ma(&input_ma) == ESP_OK;
+        ESP_LOGI(TAG, "CX25601N wired charging enabled: ICHG=%s%lu mA, IINDPM=%s%lu mA",
+                 charge_ma_ok ? "" : "?", static_cast<unsigned long>(charge_ma),
+                 input_ma_ok ? "" : "?", static_cast<unsigned long>(input_ma));
+    }
+
     void InitializeBTAudio() {
         SimpleUart& uart = SimpleUart::getInstance();
         if (uart.begin(BT_AUDIO_TX_PIN, BT_AUDIO_RX_PIN, 115200, UART_NUM_2)) {
@@ -280,7 +306,9 @@ private:
         esp_lcd_dpi_panel_config_t dpi_config;
         // 1. 时钟源配置
         dpi_config.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
-        dpi_config.dpi_clock_freq_mhz = 48;  // NV3051F_DCLK_MHZ
+        // 36 MHz is about 59 Hz for the 812 x 752 total timing.  The previous
+        // 48 MHz setting refreshed near 79 Hz and wasted display/PSRAM power.
+        dpi_config.dpi_clock_freq_mhz = 36;  // NV3051F_DCLK_MHZ
 
         // 2. 虚拟通道
         dpi_config.virtual_channel = 0;
@@ -565,6 +593,7 @@ public:
         InitializeI2C();
 
         InitializeIOExpander();
+        InitializeWiredCharger();
         // 侧面电源键：短按 + 长按开机注册一次，后续靠前台页面标记分发。
         PwrKey_Init();
         // 把 BQ27220 电量计绑定到 i2c_bus_ 上；返回值表示「这次是否挂上」，
@@ -584,6 +613,18 @@ public:
         InitializeTouch();
         InitializeDisplay();
         InitializeI2cWxcho();
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+        // Existing devices may have the old 75% default persisted in NVS.
+        // Apply the lower digital-person default once, then preserve any
+        // brightness the user subsequently chooses through MCP/UI.
+        Settings display_settings("display", true);
+        if (!display_settings.GetBool("dp_low_power", false)) {
+            display_settings.SetInt("brightness", kBacklightDefaultPercent);
+            display_settings.SetBool("dp_low_power", true);
+            ESP_LOGI(TAG, "Applied digital-person low-power brightness: %u%%",
+                     kBacklightDefaultPercent);
+        }
+#endif
         GetBacklight()->RestoreBrightness();
 
         xTaskCreate(
@@ -673,18 +714,22 @@ public:
                     if (gauge.GetBatteryLevel(battery_level, charging, discharging)) {
                         uint16_t mv = 0;
                         const bool mv_ok = gauge.GetVoltageMv(mv);
-                        if (mv_ok) {
+                        int16_t current_ma = 0;
+                        const bool current_ok = gauge.ReadCurrentMa(current_ma);
+                        if (mv_ok && current_ok) {
                             ESP_LOGI(kMonitorTag,
                                      "@@@电池  | 电量: %3d%% | 电压: %5u mV | "
-                                     "充电: %s | 放电: %s",
-                                     battery_level, mv,
+                                     "电流: %+5d mA | 充电: %s | 放电: %s",
+                                     battery_level, mv, static_cast<int>(current_ma),
                                      charging ? "是" : "否",
                                      discharging ? "是" : "否");
                         } else {
                             ESP_LOGI(kMonitorTag,
-                                     "@@@电池  | 电量: %3d%% | 电压: 读取失败 | "
+                                     "@@@电池  | 电量: %3d%% | 电压: %s | 电流: %s | "
                                      "充电: %s | 放电: %s",
                                      battery_level,
+                                     mv_ok ? "已读取" : "读取失败",
+                                     current_ok ? "已读取" : "读取失败",
                                      charging ? "是" : "否",
                                      discharging ? "是" : "否");
                         }

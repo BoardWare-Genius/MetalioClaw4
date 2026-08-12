@@ -141,6 +141,7 @@ if(CONFIG_DIGITAL_PEOPLE_ONLY)
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/bq27220_gauge.cc"
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/bt_audio_codec.cc"
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/button.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/cx25601n.cc"
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/dual_network_board.cc"
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/i2c_device.cc"
         "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nt26_board.cc"
