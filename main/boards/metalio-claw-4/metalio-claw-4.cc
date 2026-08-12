@@ -306,9 +306,9 @@ private:
         esp_lcd_dpi_panel_config_t dpi_config;
         // 1. 时钟源配置
         dpi_config.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
-        // 36 MHz is about 59 Hz for the 812 x 752 total timing.  The previous
-        // 48 MHz setting refreshed near 79 Hz and wasted display/PSRAM power.
-        dpi_config.dpi_clock_freq_mhz = 36;  // NV3051F_DCLK_MHZ
+        // Keep the production panel at the previously stable 48 MHz timing.
+        // The 36 MHz low-power timing caused visible flicker on device.
+        dpi_config.dpi_clock_freq_mhz = 48;  // NV3051F_DCLK_MHZ
 
         // 2. 虚拟通道
         dpi_config.virtual_channel = 0;
