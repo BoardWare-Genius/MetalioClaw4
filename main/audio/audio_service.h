@@ -5,6 +5,7 @@
 #include <deque>
 #include <condition_variable>
 #include <chrono>
+#include <functional>
 #include <mutex>
 
 #include <freertos/FreeRTOS.h>
@@ -54,6 +55,7 @@
 #define AS_EVENT_INPUT_TASK_RUNNING         (1 << 4)
 #define AS_EVENT_OUTPUT_TASK_RUNNING        (1 << 5)
 #define AS_EVENT_CODEC_TASK_RUNNING         (1 << 6)
+#define AS_EVENT_CONTINUOUS_INPUT_RUNNING    (1 << 7)
 
 #define AS_EVENT_ALL_TASKS_RUNNING (AS_EVENT_INPUT_TASK_RUNNING | \
     AS_EVENT_OUTPUT_TASK_RUNNING | AS_EVENT_CODEC_TASK_RUNNING)
@@ -64,6 +66,9 @@ struct AudioServiceCallbacks {
     std::function<void(bool)> on_vad_change;
     std::function<void(void)> on_audio_testing_queue_full;
 };
+
+using AudioInputTapCallback =
+    std::function<void(const std::vector<int16_t>&, size_t)>;
 
 
 enum AudioTaskType {
@@ -109,7 +114,9 @@ public:
     void EnableWakeWordDetection(bool enable);
     void EnableVoiceProcessing(bool enable);
     void EnableAudioTesting(bool enable);
+    void EnableContinuousInput(bool enable);
     void EnableDeviceAec(bool enable);
+    void SetAudioInputTapCallback(AudioInputTapCallback callback);
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
@@ -142,6 +149,8 @@ private:
     TaskHandle_t opus_codec_task_handle_ = nullptr;
     std::mutex audio_queue_mutex_;
     std::condition_variable audio_queue_cv_;
+    std::mutex audio_input_tap_mutex_;
+    AudioInputTapCallback audio_input_tap_callback_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_decode_queue_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_send_queue_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_testing_queue_;
@@ -155,6 +164,7 @@ private:
     bool voice_detected_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
+    bool continuous_input_enabled_ = false;
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;

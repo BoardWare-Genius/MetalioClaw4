@@ -1,0 +1,10 @@
+# ESP-IDF Partition Table — 32MB dedicated digital-person firmware
+# Name,         Type, SubType,      Offset,   Size, Flags
+nvsfactory,     data, nvs,         0xA000,   200K,
+nvs,            data, nvs,                ,   840K,
+otadata,        data, ota,                ,     8K,
+phy_init,       data, phy,                ,     4K,
+model,          data, spiffs,             ,   956K,
+ota_0,          app,  ota_0,      0x200000,     9M,
+ota_1,          app,  ota_1,              ,     9M,
+resources,      data, spiffs,             ,     2M,

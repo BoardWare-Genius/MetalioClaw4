@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -19,6 +20,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -180,6 +182,12 @@ volatile int s_frame_interval = 2;
 //     主循环每帧（≤40ms）会检查这个标志并自行 cleanup。
 volatile bool       s_camera_running    = false;
 TaskHandle_t        s_camera_task_handle = nullptr;
+bool                s_background_capture_enabled = false;
+bool                s_background_recording_enabled = false;
+uint32_t            s_background_photo_interval_ms = 5000;
+int64_t             s_next_background_photo_us = 0;
+uint32_t            s_background_photo_boot_id = 0;
+uint32_t            s_background_photo_sequence = 0;
 SemaphoreHandle_t   s_worker_slot        = nullptr;
 
 // 视频流水线 / 设备
@@ -577,6 +585,76 @@ void DownscaleCanvas(uint8_t* dst, int dst_w, int dst_h) {
             dst_px[2] = src_px[2];
         }
     }
+}
+
+bool SaveBackgroundPhotoFromCanvas() {
+    if (!SdCardManager::GetInstance().IsMounted() || s_canvas_buf == nullptr) {
+        return false;
+    }
+    constexpr const char* kBackgroundPhotoDir = "/sdcard/bgphoto";
+    struct stat st = {};
+    if (stat(kBackgroundPhotoDir, &st) != 0) {
+        if (mkdir(kBackgroundPhotoDir, 0775) != 0 && errno != EEXIST) {
+            ESP_LOGW(TAG, "create background photo dir failed: errno=%d %s",
+                     errno, strerror(errno));
+            return false;
+        }
+    } else if (!S_ISDIR(st.st_mode)) {
+        ESP_LOGW(TAG, "background photo path is not a directory");
+        return false;
+    }
+
+    const size_t bgr_size = static_cast<size_t>(kSaveW) * kSaveH * 3;
+    uint8_t* bgr = static_cast<uint8_t*>(
+        heap_caps_malloc(bgr_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (bgr == nullptr) {
+        ESP_LOGW(TAG, "allocate background photo buffer failed");
+        return false;
+    }
+    DownscaleCanvas(bgr, kSaveW, kSaveH);
+
+    uint8_t* jpeg_data = nullptr;
+    size_t jpeg_len = 0;
+    const bool encoded = image_to_jpeg(
+        bgr, bgr_size, kSaveW, kSaveH, V4L2_PIX_FMT_BGR24, kJpegQuality,
+        &jpeg_data, &jpeg_len);
+    heap_caps_free(bgr);
+    if (!encoded || jpeg_data == nullptr || jpeg_len == 0) {
+        free(jpeg_data);
+        ESP_LOGW(TAG, "encode background JPEG failed");
+        return false;
+    }
+
+    if (s_background_photo_boot_id == 0) {
+        s_background_photo_boot_id = esp_random();
+    }
+    char path[128];
+    const unsigned long uptime_ms =
+        static_cast<unsigned long>(esp_timer_get_time() / 1000ULL);
+    std::snprintf(path, sizeof(path), "%s/photo_%08lx_%08lu_%04lu.jpg",
+                  kBackgroundPhotoDir,
+                  static_cast<unsigned long>(s_background_photo_boot_id),
+                  uptime_ms,
+                  static_cast<unsigned long>(s_background_photo_sequence++));
+    FILE* file = fopen(path, "wb");
+    bool saved = file != nullptr;
+    if (saved) {
+        saved = fwrite(jpeg_data, 1, jpeg_len, file) == jpeg_len &&
+                fflush(file) == 0 && fsync(fileno(file)) == 0;
+        if (fclose(file) != 0) {
+            saved = false;
+        }
+    }
+    free(jpeg_data);
+    if (!saved) {
+        ESP_LOGW(TAG, "save background JPEG failed: %s errno=%d %s", path,
+                 errno, strerror(errno));
+        unlink(path);
+        return false;
+    }
+    ESP_LOGI(TAG, "Saved background photo: %s bytes=%u", path,
+             static_cast<unsigned>(jpeg_len));
+    return true;
 }
 
 void save_photo_task(void* /*arg*/) {
@@ -1036,9 +1114,20 @@ void camera_worker_task(void* /*arg*/) {
             // 这样 V4L2 不堆积，但跳过的帧免去 ~1.3MB 像素转换 + LVGL 刷屏。
             uint32_t interval = static_cast<uint32_t>(s_frame_interval);
             if (interval < 1) interval = 1;
-            const bool should_render = ((capture_count++ % interval) == 0);
+            lv_obj_t* render_canvas =
+                s_external_canvas != nullptr ? s_external_canvas : s_ui.canvas;
+            const bool has_render_target = render_canvas != nullptr && s_canvas_buf != nullptr;
+            const bool should_render =
+                has_render_target && ((capture_count++ % interval) == 0);
 
-            if ((buf.flags & V4L2_BUF_FLAG_DONE) && !s_photo_frozen && should_render) {
+            const int64_t now_us = esp_timer_get_time();
+            const bool photo_due =
+                s_background_recording_enabled && s_canvas_buf != nullptr &&
+                SdCardManager::GetInstance().IsMounted() &&
+                (s_next_background_photo_us == 0 || now_us >= s_next_background_photo_us);
+
+            if ((buf.flags & V4L2_BUF_FLAG_DONE) && !s_photo_frozen &&
+                (should_render || photo_due)) {
                 const uint8_t* src = s_cam.buffer[buf.index];
                 switch (s_cam.pixel_format) {
                 case V4L2_PIX_FMT_RGB565:
@@ -1057,25 +1146,31 @@ void camera_worker_task(void* /*arg*/) {
                     break;
                 }
 
-                // 让 LVGL 在下次刷新时重绘 canvas。
-                if (esp_lv_adapter_lock(20) == ESP_OK) {
-                    lv_obj_t* canvas =
-                        s_external_canvas != nullptr ? s_external_canvas
-                                                     : s_ui.canvas;
-                    if (canvas != nullptr) {
-                        lv_obj_invalidate(canvas);
+                if (should_render) {
+                    // 让 LVGL 在下次刷新时重绘 canvas。
+                    if (esp_lv_adapter_lock(20) == ESP_OK) {
+                        if (render_canvas != nullptr) {
+                            lv_obj_invalidate(render_canvas);
+                        }
+                        esp_lv_adapter_unlock();
                     }
-                    esp_lv_adapter_unlock();
+
+                    frame_count++;
+                    if (now_us - fps_start >= 5LL * 1000 * 1000) {
+                        ESP_LOGI(TAG, "Camera FPS: %.1f",
+                                 static_cast<double>(frame_count) * 1e6 /
+                                     static_cast<double>(now_us - fps_start));
+                        frame_count = 0;
+                        fps_start = now_us;
+                    }
                 }
 
-                frame_count++;
-                int64_t now = esp_timer_get_time();
-                if (now - fps_start >= 5LL * 1000 * 1000) {
-                    ESP_LOGI(TAG, "Camera FPS: %.1f",
-                             static_cast<double>(frame_count) * 1e6 /
-                                 static_cast<double>(now - fps_start));
-                    frame_count = 0;
-                    fps_start = now;
+                if (photo_due) {
+                    s_next_background_photo_us =
+                        now_us + static_cast<int64_t>(
+                                     std::max<uint32_t>(1000, s_background_photo_interval_ms)) *
+                                     1000;
+                    SaveBackgroundPhotoFromCanvas();
                 }
             }
 
@@ -1416,7 +1511,9 @@ void CameraScreen::LifecycleCallback(screen_lifecycle_event_t event) {
         ESP_LOGI(TAG, "unload: camera_screen -> signal worker stop (non-blocking)");
         // 只发停止信号；worker 在自己的 task 里 cleanup（关流、esp_video_deinit、
         // 断电）。LVGL 主线程不阻塞，避免 adapter 后台任务长时间拿不到锁。
-        stop_camera_worker();
+        if (!s_background_capture_enabled) {
+            stop_camera_worker();
+        }
         s_external_canvas = nullptr;
     }
 }
@@ -1453,6 +1550,44 @@ esp_err_t CameraScreen::StartExternalPreview(lv_obj_t* canvas) {
 }
 
 void CameraScreen::StopExternalPreview() {
-    stop_camera_worker();
     s_external_canvas = nullptr;
+    if (!s_background_capture_enabled && s_ui.canvas == nullptr) {
+        stop_camera_worker();
+    }
+}
+
+esp_err_t CameraScreen::StartBackgroundCapture() {
+    s_background_capture_enabled = true;
+    s_external_canvas = nullptr;
+    ESP_LOGI(TAG, "start always-on headless camera capture");
+    return start_camera_worker();
+}
+
+void CameraScreen::StopBackgroundCapture() {
+    s_background_capture_enabled = false;
+    if (s_external_canvas == nullptr && s_ui.canvas == nullptr) {
+        stop_camera_worker();
+    }
+}
+
+void CameraScreen::EnableBackgroundRecording(bool enable, uint32_t interval_ms,
+                                             uint32_t boot_id) {
+    s_background_recording_enabled = enable;
+    if (enable) {
+        // Audio and camera must share one boot ID. Their sequence spaces remain
+        // independent because Beaver Memory keys them by stream_id as well.
+        s_background_photo_boot_id = boot_id;
+        s_background_photo_interval_ms = std::max<uint32_t>(1000, interval_ms);
+        s_next_background_photo_us = 0;
+        PreviewBuffer preview{};
+        if (!PreparePreviewBuffer(&preview)) {
+            ESP_LOGE(TAG, "Cannot allocate background photo conversion buffer");
+            s_background_recording_enabled = false;
+            return;
+        }
+        ESP_LOGI(TAG, "Background JPEG recording enabled: interval=%lu ms dir=/sdcard/bgphoto",
+                 static_cast<unsigned long>(s_background_photo_interval_ms));
+    } else {
+        ESP_LOGI(TAG, "Background JPEG recording disabled");
+    }
 }

@@ -2,7 +2,9 @@
 #include "system_info.h"
 #include "settings.h"
 #include "display/display.h"
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "display/oled_display.h"
+#endif
 #include "assets/lang_config.h"
 
 #include <esp_log.h>
@@ -159,11 +161,15 @@ std::string Board::GetSystemInfoJson() {
     auto display = GetDisplay();
     if (display) {
         json += R"("display":{)";
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+        json += R"("monochrome":false,)";
+#else
         if (dynamic_cast<OledDisplay*>(display)) {
             json += R"("monochrome":)" + std::string("true") + R"(,)";
         } else {
             json += R"("monochrome":)" + std::string("false") + R"(,)";
         }
+#endif
         json += R"("width":)" + std::to_string(display->width()) + R"(,)";
         json += R"("height":)" + std::to_string(display->height()) + R"(,)";
         json.pop_back(); // Remove the last comma

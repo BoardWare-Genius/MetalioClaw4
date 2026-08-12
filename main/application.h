@@ -7,6 +7,7 @@
 #include <esp_timer.h>
 
 #include <string>
+#include <atomic>
 #include <mutex>
 #include <deque>
 #include <memory>
@@ -14,6 +15,7 @@
 #include "protocol.h"
 #include "ota.h"
 #include "audio_service.h"
+#include "background_capture_service.h"
 #include "device_state_event.h"
 
 
@@ -52,6 +54,10 @@ public:
     void DismissAlert();
     void AbortSpeaking(AbortReason reason);
     void ToggleChatState();
+    void ToggleBackgroundRecording();
+    bool IsBackgroundRecording() const {
+        return background_capture_service_.IsRunning();
+    }
     void StartListening();
     void StopListening();
     void Reboot();
@@ -88,6 +94,8 @@ private:
     AecMode aec_mode_ = kAecOff;
     std::string last_error_message_;
     AudioService audio_service_;
+    BackgroundCaptureService background_capture_service_;
+    std::atomic<bool> background_capture_toggle_pending_{false};
     std::string pending_activation_code_;
     volatile bool activation_suspended_ = false;
 

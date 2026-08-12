@@ -56,4 +56,15 @@ public:
     static bool PreparePreviewBuffer(PreviewBuffer* out);
     static esp_err_t StartExternalPreview(lv_obj_t* canvas);
     static void StopExternalPreview();
+
+    // Keep the sensor and V4L2 stream active without allocating or rendering a
+    // preview buffer. Intended for an always-on, on-device capture pipeline.
+    static esp_err_t StartBackgroundCapture();
+    static void StopBackgroundCapture();
+
+    // Save a JPEG snapshot from the headless stream at the requested interval.
+    // This mirrors the reference project's periodic-photo behavior; it does
+    // not encode an MP4 video stream.
+    static void EnableBackgroundRecording(bool enable, uint32_t interval_ms,
+                                          uint32_t boot_id);
 };

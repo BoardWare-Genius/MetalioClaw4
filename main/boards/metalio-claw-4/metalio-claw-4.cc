@@ -46,10 +46,14 @@
 // #include "power_save_timer.h"
 
 #include "SdCardManager.hpp"
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "usb_virtual_disk.h"
+#endif
 #include "bq27220_gauge.h"
 #include "bt_audio_codec.h"
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "display/screen/bluetooth_screen/bluetooth_screen.h"
+#endif
 
 #include "driver/temperature_sensor.h"
 #include "esp_timer.h"
@@ -209,9 +213,21 @@ private:
             return;
         }
         // 设备开机默认进入蓝牙模式1（AT+RX=2 -> AT+MODE=1，接收模式）。
-        // ApplyDefaultMode() 内部用独立 FreeRTOS task 发送 AT 命令，UI 未
-        // 起来阶段调用是安全的（post_status / lv_async_call 都有守卫）。
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+        xTaskCreate(
+            [](void*) {
+                auto& bt_uart = SimpleUart::getInstance();
+                bt_uart.sendString("AT+RX=2\r\n");
+                vTaskDelay(pdMS_TO_TICKS(700));
+                bt_uart.sendString("AT+MODE=1\r\n");
+                ESP_LOGI(TAG, "BT audio default receive mode applied");
+                vTaskDelete(nullptr);
+            },
+            "bt_default_mode", 3072, nullptr, 5, nullptr);
+#else
+        // The normal multi-app firmware reuses the Bluetooth page state.
         BluetoothScreen::ApplyDefaultMode();
+#endif
     }
 
     static esp_err_t bsp_enable_dsi_phy_power(void) {
@@ -235,8 +251,10 @@ private:
         if (!SdCardManager::GetInstance().Mount()) {
             ESP_LOGW(TAG, "SD card not mounted at boot (card may be absent)");
         }
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
         // 虚拟 U 盘 worker：默认保持 USB Serial/JTAG，启用时再切 MSC。
         UsbVirtualDisk::GetInstance().Init();
+#endif
     }
 
     // ---------- NV3051F (TRULY HE396-040T2BZZ, 36MHz DPI, RGB888) ----------

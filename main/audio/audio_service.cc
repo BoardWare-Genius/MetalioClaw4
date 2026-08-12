@@ -10,7 +10,9 @@
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #include "wake_words/afe_wake_word.h"
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "wake_words/custom_wake_word.h"
+#endif
 #else
 #include "wake_words/esp_wake_word.h"
 #endif
@@ -76,7 +78,11 @@ void AudioService::Initialize(AudioCodec* codec) {
 void AudioService::Start() {
     service_stopped_ = false;
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
-        AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_ALL_TASKS_RUNNING);
+        AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_CONTINUOUS_INPUT_RUNNING |
+        AS_EVENT_ALL_TASKS_RUNNING);
+    if (continuous_input_enabled_) {
+        xEventGroupSetBits(event_group_, AS_EVENT_CONTINUOUS_INPUT_RUNNING);
+    }
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
@@ -185,6 +191,13 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
     audio_debugger_->Feed(data);
 #endif
 
+    {
+        std::lock_guard<std::mutex> lock(audio_input_tap_mutex_);
+        if (audio_input_tap_callback_) {
+            audio_input_tap_callback_(data, static_cast<size_t>(samples));
+        }
+    }
+
     return true;
 }
 
@@ -192,7 +205,8 @@ void AudioService::AudioInputTask() {
     xEventGroupSetBits(event_group_, AS_EVENT_INPUT_TASK_RUNNING);
     while (true) {
         EventBits_t bits = xEventGroupWaitBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
-            AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING,
+            AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING |
+            AS_EVENT_CONTINUOUS_INPUT_RUNNING,
             pdFALSE, pdFALSE, portMAX_DELAY);
 
         if (service_stopped_) {
@@ -233,7 +247,12 @@ void AudioService::AudioInputTask() {
             int samples = wake_word_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
-                    wake_word_->Feed(data);
+                    // The state may have changed while InputData was blocked.
+                    // Never feed an AFE after its consumer has been stopped.
+                    if (xEventGroupGetBits(event_group_) &
+                        AS_EVENT_WAKE_WORD_RUNNING) {
+                        wake_word_->Feed(data);
+                    }
                     continue;
                 }
             }
@@ -245,10 +264,24 @@ void AudioService::AudioInputTask() {
             int samples = audio_processor_->GetFeedSize();
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
-                    audio_processor_->Feed(std::move(data));
+                    if (xEventGroupGetBits(event_group_) &
+                        AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
+                        audio_processor_->Feed(std::move(data));
+                    }
                     continue;
                 }
             }
+        }
+
+        /* Keep the codec input and DMA path alive when no consumer is active. */
+        if (bits & AS_EVENT_CONTINUOUS_INPUT_RUNNING) {
+            std::vector<int16_t> data;
+            constexpr int samples = 160;  // 10 ms at 16 kHz
+            if (ReadAudioData(data, 16000, samples)) {
+                continue;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
 
         ESP_LOGE(TAG, "Should not be here, bits: %lx", bits);
@@ -257,6 +290,21 @@ void AudioService::AudioInputTask() {
 
     xEventGroupClearBits(event_group_, AS_EVENT_INPUT_TASK_RUNNING);
     ESP_LOGW(TAG, "Audio input task stopped");
+}
+
+void AudioService::EnableContinuousInput(bool enable) {
+    continuous_input_enabled_ = enable;
+    if (enable) {
+        xEventGroupSetBits(event_group_, AS_EVENT_CONTINUOUS_INPUT_RUNNING);
+    } else {
+        xEventGroupClearBits(event_group_, AS_EVENT_CONTINUOUS_INPUT_RUNNING);
+    }
+    ESP_LOGI(TAG, "Continuous microphone capture %s", enable ? "enabled" : "disabled");
+}
+
+void AudioService::SetAudioInputTapCallback(AudioInputTapCallback callback) {
+    std::lock_guard<std::mutex> lock(audio_input_tap_mutex_);
+    audio_input_tap_callback_ = std::move(callback);
 }
 
 void AudioService::AudioOutputTask() {
@@ -476,8 +524,10 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         wake_word_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
     } else {
-        wake_word_->Stop();
+        // Stop the producer first.  Otherwise AudioInputTask can continue to
+        // feed an AFE whose fetch task has already been stopped.
         xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+        wake_word_->Stop();
     }
 }
 
@@ -495,8 +545,10 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         audio_processor_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
     } else {
-        audio_processor_->Stop();
+        // Keep the feed/fetch lifecycle ordered in the same way as wake-word
+        // detection: stop feeding before stopping/resetting the consumer.
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+        audio_processor_->Stop();
     }
 }
 
@@ -660,6 +712,15 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     models_list_ = models_list;
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+    // The dedicated image follows the selected AFE wake-word configuration
+    // directly and does not pull in the downloadable MultiNet command stack.
+    if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+        wake_word_ = std::make_unique<AfeWakeWord>();
+    } else {
+        wake_word_ = nullptr;
+    }
+#else
     if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<CustomWakeWord>();
     } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
@@ -667,6 +728,7 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     } else {
         wake_word_ = nullptr;
     }
+#endif
 #else
     if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<EspWakeWord>();
@@ -677,6 +739,12 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
     if (wake_word_) {
         wake_word_->OnWakeWordDetected([this](const std::string& wake_word) {
+            // This callback runs in the wake-word consumer task.  Stop the
+            // AudioInputTask producer before stopping/resetting that consumer;
+            // otherwise it keeps feeding the AFE while the main event loop is
+            // opening the WebSocket and the AFE ringbuffer overflows.
+            xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+            wake_word_->Stop();
             if (callbacks_.on_wake_word_detected) {
                 callbacks_.on_wake_word_detected(wake_word);
             }

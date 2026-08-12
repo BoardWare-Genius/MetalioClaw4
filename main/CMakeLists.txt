@@ -86,6 +86,7 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_protocol.cc"
             "mcp_server.cc"
+            "background_capture_service.cc"
             "system_info.cc"
             "application.cc"
             "ota.cc"
@@ -95,10 +96,60 @@ set(SOURCES "audio/audio_codec.cc"
             "main.cc"
             )
 
+# Dedicated digital-person firmware: keep only the conversation appliance and
+# its maintenance screens. Source files remain in the repository and can be
+# restored by disabling CONFIG_DIGITAL_PEOPLE_ONLY.
+if(CONFIG_DIGITAL_PEOPLE_ONLY)
+    list(FILTER SOURCES EXCLUDE REGEX "^display/screen/")
+    list(FILTER SOURCES EXCLUDE REGEX "^audio/codecs/")
+    list(FILTER SOURCES EXCLUDE REGEX "^led/")
+    list(FILTER SOURCES EXCLUDE REGEX "^display/lvgl_display/")
+    list(REMOVE_ITEM SOURCES
+        "display/lcd_display.cc"
+        "display/oled_display.cc"
+        "display/theme_manager.cc"
+        "display/font/font_puhui_number_50_4.c"
+        "display/font/font_puhui_number_120_4.c"
+        "protocols/mqtt_protocol.cc"
+        "assets.cc"
+    )
+    list(APPEND SOURCES
+        "display/screen/screen_util.cc"
+        "display/screen/pwr_key_handler.cc"
+        "display/screen/digital_people_mode.cc"
+        "display/screen/boot_screen/boot_screen.cc"
+        "display/screen/ota_screen/ota_screen.cc"
+        "display/screen/network_screen/network_screen.cc"
+        "display/screen/digital_people_screen/digital_people_screen.cc"
+    )
+    if(CONFIG_ALWAYS_ON_CAMERA)
+        list(APPEND SOURCES
+            "display/screen/camera_screen/camera_screen.cc"
+            "display/lvgl_display/jpg/image_to_jpeg.cpp"
+        )
+    endif()
+endif()
+
 set(INCLUDE_DIRS "." "i18n" "display" "display/font" "display/lvgl_display" "display/lvgl_display/jpg" "display/screen" "display/screen/boot_screen" "display/screen/ota_screen" "display/screen/home_screen" "display/screen/game_2048_screen" "display/screen/calculator_screen" "display/screen/calendar_screen" "display/screen/music_screen" "display/screen/radio_screen" "display/screen/recording_screen" "display/screen/weather_screen" "display/screen/gps_screen" "display/screen/camera_screen" "display/screen/vibrate_screen" "display/screen/backlight_screen" "display/screen/settings_screen" "display/screen/call_screen" "display/screen/bluetooth_screen" "display/screen/chat_screen" "display/screen/network_screen" "display/screen/digital_people_screen" "display/screen/level_screen" "display/screen/magnet_screen" "display/screen/sd_card_screen" "display/screen/pin_test_screen" "display/screen/test_screen" "display/screen/openclaw_screen" "display/screen/ai_image_gen_screen" "display/screen/translate_screen" "display/screen/theme_screen" "display/screen/info_screen" "display/screen/standby_screen" "audio" "protocols")
 
-# Add board common files
-file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)
+# Add board common files. The dedicated build excludes peripheral/app helpers
+# such as camera, GPS, USB mass-storage, tests and MCP tools.
+if(CONFIG_DIGITAL_PEOPLE_ONLY)
+    set(BOARD_COMMON_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/backlight.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/board.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/bq27220_gauge.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/bt_audio_codec.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/button.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/dual_network_board.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/i2c_device.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nt26_board.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/uart_eth_modem.cc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/wifi_board.cc"
+    )
+else()
+    file(GLOB BOARD_COMMON_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/boards/common/*.cc)
+endif()
 list(APPEND SOURCES ${BOARD_COMMON_SOURCES})
 list(APPEND INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/boards/common)
 
@@ -142,7 +193,9 @@ else()
 endif()
 if(CONFIG_IDF_TARGET_ESP32S3 OR CONFIG_IDF_TARGET_ESP32P4)
     list(APPEND SOURCES "audio/wake_words/afe_wake_word.cc")
+    if(NOT CONFIG_DIGITAL_PEOPLE_ONLY)
     list(APPEND SOURCES "audio/wake_words/custom_wake_word.cc")
+    endif()
 else()
     list(APPEND SOURCES "audio/wake_words/esp_wake_word.cc")
 endif()
@@ -460,9 +513,19 @@ else()
     message(STATUS "Assets partition not found, using v1 partition table")
 endif()
 
+set(RESOURCES_SOURCE_DIR "./xingzhi-assets")
+if(CONFIG_DIGITAL_PEOPLE_ONLY)
+    # Only the boot animation is needed; all launcher and app artwork is left
+    # out of resources.bin.
+    set(RESOURCES_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/digital_people_resources")
+    file(MAKE_DIRECTORY "${RESOURCES_SOURCE_DIR}")
+    file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/xingzhi-assets/ic_boot_animation.eaf"
+         DESTINATION "${RESOURCES_SOURCE_DIR}")
+endif()
+
 spiffs_create_partition_assets(
     resources
-    "./xingzhi-assets"
+    "${RESOURCES_SOURCE_DIR}"
     FLASH_IN_PROJECT
     MMAP_FILE_SUPPORT_FORMAT ".jpg,.png,.eaf"
     MMAP_SUPPORT_SJPG
@@ -470,4 +533,6 @@ spiffs_create_partition_assets(
     MMAP_SPLIT_HEIGHT 16
 ) 
 
-spiffs_create_partition_image(factory_test ./factory-test-assets FLASH_IN_PROJECT DEPENDS)
+if(NOT CONFIG_DIGITAL_PEOPLE_ONLY)
+    spiffs_create_partition_image(factory_test ./factory-test-assets FLASH_IN_PROJECT DEPENDS)
+endif()

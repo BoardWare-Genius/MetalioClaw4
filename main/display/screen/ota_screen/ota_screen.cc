@@ -8,7 +8,11 @@
 
 #include "assets/lang_config.h"
 #include "esp_lv_adapter.h"
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+#include "digital_people_mode.h"
+#else
 #include "home_screen/home_screen.h"
+#endif
 #include "screen_util.h"
 
 LV_FONT_DECLARE(font_puhui_20_4);
@@ -299,15 +303,21 @@ void OtaScreen::Dismiss() {
         return;
     }
 
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     lv_obj_t* old_screen = s_ui.screen;
+#endif
     s_ui = {};
     s_start_time_us = 0;
 
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+    DigitalPeopleMode::ShowDigitalPeople();
+#else
     lv_obj_t* home = HomeScreen::Create();
     lv_screen_load(home);
     if (old_screen != nullptr) {
         lv_obj_delete(old_screen);
     }
+#endif
 
     esp_lv_adapter_unlock();
     ESP_LOGI(TAG, "OTA screen dismissed");

@@ -26,8 +26,13 @@
 
 #ifdef HAVE_LVGL
 #include "ota_screen.h"
+#if CONFIG_ALWAYS_ON_CAMERA
+#include "camera_screen/camera_screen.h"
+#endif
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "home_screen.h"
 #include "chat_screen/chat_screen.h"
+#endif
 #endif
 
 #define TAG "Application"
@@ -83,6 +88,11 @@ Application::~Application() {
 }
 
 void Application::CheckAssetsVersion() {
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+    // No theme/emoji bundle exists in the dedicated image. Emotion files are
+    // read directly from the SD card.
+    return;
+#else
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
     auto& assets = Assets::GetInstance();
@@ -132,6 +142,7 @@ void Application::CheckAssetsVersion() {
     assets.Apply();
     display->SetChatMessage("system", "");
     display->SetEmotion("microchip_ai");
+#endif
 }
 
 void Application::CheckNewVersion(Ota& ota) {
@@ -207,7 +218,9 @@ void Application::CheckNewVersion(Ota& ota) {
             if (err == ESP_OK) {
                 pending_activation_code_.clear();
 #ifdef HAVE_LVGL
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
                 HomeScreen::RefreshStatusBar();
+#endif
 #endif
                 xEventGroupSetBits(event_group_, MAIN_EVENT_CHECK_NEW_VERSION_DONE);
                 break;
@@ -230,7 +243,9 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
 
     pending_activation_code_ = code;
 #ifdef HAVE_LVGL
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     HomeScreen::RefreshStatusBar();
+#endif
 #endif
 
     struct digit_sound {
@@ -373,6 +388,38 @@ void Application::ToggleChatState() {
     }
 }
 
+void Application::ToggleBackgroundRecording() {
+#if CONFIG_BACKGROUND_RECORDING
+    bool expected = false;
+    if (!background_capture_toggle_pending_.compare_exchange_strong(expected,
+                                                                    true)) {
+        ESP_LOGW(TAG, "Background recording toggle already in progress");
+        return;
+    }
+
+    const BaseType_t created = xTaskCreate(
+        [](void* arg) {
+            auto* app = static_cast<Application*>(arg);
+            if (app->background_capture_service_.IsRunning()) {
+                ESP_LOGI(TAG, "User requested background recording stop");
+                app->background_capture_service_.Stop();
+            } else {
+                ESP_LOGI(TAG, "User requested background recording start");
+                app->background_capture_service_.Start();
+            }
+            app->background_capture_toggle_pending_.store(false);
+            vTaskDelete(nullptr);
+        },
+        "bg_record_toggle", 4096, this, tskIDLE_PRIORITY + 2, nullptr);
+    if (created != pdPASS) {
+        background_capture_toggle_pending_.store(false);
+        ESP_LOGE(TAG, "Failed to create background recording toggle task");
+    }
+#else
+    ESP_LOGW(TAG, "Background recording is disabled in project configuration");
+#endif
+}
+
 void Application::StartListening() {
     if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
@@ -446,6 +493,19 @@ void Application::Start() {
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
     audio_service_.Start();
+#if CONFIG_ALWAYS_ON_MICROPHONE
+    audio_service_.EnableContinuousInput(true);
+#endif
+
+#if CONFIG_ALWAYS_ON_CAMERA && defined(HAVE_LVGL)
+    if (CameraScreen::StartBackgroundCapture() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start always-on camera capture");
+    }
+#endif
+
+#if CONFIG_BACKGROUND_RECORDING
+    background_capture_service_.Start();
+#endif
 
     AudioServiceCallbacks callbacks;
     callbacks.on_send_queue_available = [this]() {
@@ -529,19 +589,21 @@ void Application::Start() {
     // Initialize the protocol
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-    // Add MCP common tools before initializing the protocol
+    // Add MCP common tools before initializing the protocol.
     auto& mcp_server = McpServer::GetInstance();
     mcp_server.AddCommonTools();
     mcp_server.AddUserOnlyTools();
 
-    if (ota.HasMqttConfig()) {
-        protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota.HasWebsocketConfig()) {
-        protocol_ = std::make_unique<WebsocketProtocol>();
-    } else {
-        ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
-        protocol_ = std::make_unique<MqttProtocol>();
-    }
+    // The built-in chat app connects directly to the ASR/LLM/TTS WS service.
+    // Persist the build-time endpoint because WebsocketProtocol reads it from NVS
+    // whenever a new audio session is opened.
+    Settings websocket_settings("websocket", true);
+    websocket_settings.SetString("url", CONFIG_CUSTOM_AGENT_WEBSOCKET_URL);
+    websocket_settings.SetInt("version", CONFIG_CUSTOM_AGENT_PROTOCOL_VERSION);
+    ESP_LOGI(TAG, "Using direct chat WebSocket: %s (protocol v%d)",
+             CONFIG_CUSTOM_AGENT_WEBSOCKET_URL,
+             CONFIG_CUSTOM_AGENT_PROTOCOL_VERSION);
+    protocol_ = std::make_unique<WebsocketProtocol>();
 
     protocol_->OnConnected([this]() {
         DismissAlert();
@@ -583,19 +645,26 @@ void Application::Start() {
                         SetDeviceState(kDeviceStateSpeaking);
                     }
                 });
+            } else if (strcmp(state->valuestring, "thinking") == 0) {
+                Schedule([display]() {
+                    display->SetStatus("思考中...");
+                });
             } else if (strcmp(state->valuestring, "stop") == 0) {
-                Schedule([this]() {
+                Schedule([this, display]() {
                     if (device_state_ == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
                         } else {
                             SetDeviceState(kDeviceStateListening);
                         }
+                    } else if (device_state_ == kDeviceStateListening) {
+                        display->SetStatus(Lang::Strings::LISTENING);
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
-                if (cJSON_IsString(text)) {
+                auto final = cJSON_GetObjectItem(root, "final");
+                if (cJSON_IsString(text) && cJSON_IsTrue(final)) {
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
                     Schedule([this, display, message = std::string(text->valuestring)]() {
                         display->SetChatMessage("assistant", message.c_str());
@@ -604,7 +673,9 @@ void Application::Start() {
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {
             auto text = cJSON_GetObjectItem(root, "text");
-            if (cJSON_IsString(text)) {
+            auto final = cJSON_GetObjectItem(root, "final");
+            if (cJSON_IsString(text) &&
+                (!cJSON_IsBool(final) || cJSON_IsTrue(final))) {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
                 Schedule([this, display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
@@ -854,7 +925,9 @@ void Application::SetDeviceState(DeviceState state) {
     }
 
 #ifdef HAVE_LVGL
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     ChatScreen::RefreshDeviceState();
+#endif
 #endif
 }
 

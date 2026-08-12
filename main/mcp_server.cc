@@ -12,11 +12,15 @@
 
 #include "application.h"
 #include "display.h"
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "oled_display.h"
+#endif
 #include "board.h"
 #include "settings.h"
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#endif
 
 #define TAG "MCP"
 
@@ -77,7 +81,7 @@ void McpServer::AddCommonTools() {
             });
     }
 
-#ifdef HAVE_LVGL
+#if defined(HAVE_LVGL) && !CONFIG_DIGITAL_PEOPLE_ONLY
     auto display = board.GetDisplay();
     if (display && display->GetTheme() != nullptr) {
         AddTool("self.screen.set_theme",
@@ -119,6 +123,29 @@ void McpServer::AddCommonTools() {
                 return camera->Explain(question);
             });
     }
+#endif
+
+#if CONFIG_DIGITAL_PEOPLE_ONLY && CONFIG_BACKGROUND_RECORDING
+    AddTool("self.background_recording.get_state",
+        "Get whether continuous microphone and camera recording is active.",
+        PropertyList(),
+        [](const PropertyList&) -> ReturnValue {
+            return Application::GetInstance().IsBackgroundRecording();
+        });
+
+    AddTool("self.background_recording.set_enabled",
+        "Start or stop continuous microphone and camera recording and upload.",
+        PropertyList({
+            Property("enabled", kPropertyTypeBoolean)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& app = Application::GetInstance();
+            const bool enabled = properties["enabled"].value<bool>();
+            if (app.IsBackgroundRecording() != enabled) {
+                app.ToggleBackgroundRecording();
+            }
+            return enabled;
+        });
 #endif
 
     // Restore the original tools list to the end of the tools list
@@ -171,7 +198,7 @@ void McpServer::AddUserOnlyTools() {
         });
 
     // Display control
-#ifdef HAVE_LVGL
+#if defined(HAVE_LVGL) && !CONFIG_DIGITAL_PEOPLE_ONLY
     auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
     if (display) {
         AddUserOnlyTool("self.screen.get_info", "Information about the screen, including width, height, etc.",
@@ -287,6 +314,7 @@ void McpServer::AddUserOnlyTools() {
 #endif // HAVE_LVGL
 
     // Assets download url
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     auto& assets = Assets::GetInstance();
     if (assets.partition_valid()) {
         AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
@@ -300,6 +328,7 @@ void McpServer::AddUserOnlyTools() {
                 return true;
             });
     }
+#endif
 }
 
 void McpServer::AddTool(McpTool* tool) {

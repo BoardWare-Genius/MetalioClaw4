@@ -7,8 +7,12 @@
 
 #include "IOExpander.hpp"
 #include "application.h"
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+#include "digital_people_mode.h"
+#else
 #include "home_screen/home_screen.h"
 #include "standby_screen/standby_screen.h"
+#endif
 
 namespace {
 
@@ -61,27 +65,37 @@ const char* StackTop() {
     return s_depth > 0 ? s_stack[s_depth - 1] : kNoneScreen;
 }
 
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 void OnEnterStandbyAsync(void* /*arg*/) { StandbyScreen::Show(); }
 
 void OnLeaveStandbyAsync(void* /*arg*/) { StandbyScreen::ReturnHome(); }
+#endif
 
 void OnShortPress() {
     const char* screen = PwrKey_ActiveScreen();
     ESP_LOGI(TAG, "short-press on screen=%s (depth=%d)", screen, s_depth);
 
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     if (std::strcmp(screen, kHomeScreen) == 0) {
         ESP_LOGI(TAG, "dispatch: enter standby_screen");
         lv_async_call(OnEnterStandbyAsync, nullptr);
         return;
     }
-
     if (std::strcmp(screen, "standby") == 0) {
         ESP_LOGI(TAG, "dispatch: leave standby -> home");
         lv_async_call(OnLeaveStandbyAsync, nullptr);
         return;
     }
+#endif
 
     if (IsChatToggleScreen(screen)) {
+#if CONFIG_DIGITAL_PEOPLE_ONLY && CONFIG_BACKGROUND_RECORDING
+        if (std::strcmp(screen, "digital_people") == 0) {
+            ESP_LOGI(TAG, "dispatch: ToggleBackgroundRecording()");
+            Application::GetInstance().ToggleBackgroundRecording();
+            return;
+        }
+#endif
         ESP_LOGI(TAG, "dispatch: ToggleChatState()");
         Application::GetInstance().ToggleChatState();
         return;
@@ -91,12 +105,16 @@ void OnShortPress() {
 }
 
 void OnLongPressAsync(void* /*arg*/) {
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+    DigitalPeopleMode::ShowNetworkSettings();
+#else
     HomeScreen::ShowPowerOptionsDialog();
+#endif
 }
 
 void OnLongPress() {
     const char* screen = PwrKey_ActiveScreen();
-    ESP_LOGI(TAG, "long-press %ums on screen=%s -> power dialog",
+    ESP_LOGI(TAG, "long-press %ums on screen=%s -> maintenance",
              static_cast<unsigned>(kLongPressMs), screen);
     lv_async_call(OnLongPressAsync, nullptr);
 }

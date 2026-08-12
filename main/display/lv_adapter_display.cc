@@ -14,6 +14,7 @@
 #include "mmap_generate_resources.h"
 
 #include "screen/boot_screen/boot_screen.h"
+#include "screen/digital_people_mode.h"
 #include "screen/chat_screen/chat_screen.h"
 #include "screen/digital_people_screen/digital_people_screen.h"
 #include "screen/home_screen/home_screen.h"
@@ -165,14 +166,17 @@ void LVAdapterDisplay::SetupUI() {
 
     lv_timer_t* timer = lv_timer_create(
         [](lv_timer_t* t) {
-            lv_obj_t* old_scr = lv_screen_active();
-
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+                DigitalPeopleMode::ShowDigitalPeople();
+#else
+                lv_obj_t* old_scr = lv_screen_active();
                 lv_obj_t* home_scr = HomeScreen::Create();
                 lv_screen_load(home_scr);
                 if (old_scr != NULL && old_scr != home_scr) {
                     lv_obj_delete(old_scr);
                 }
+#endif
                 esp_lv_adapter_unlock();
             }
 
@@ -199,7 +203,9 @@ void LVAdapterDisplay::SetEmotion(const char* const emotion) {
         return;
     }
     DigitalPeopleScreen::SetEmotion(category);
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     ChatScreen::SetEmotion(emotion != nullptr ? emotion : "neutral");
+#endif
     esp_lv_adapter_unlock();
 }
 
@@ -222,29 +228,45 @@ void LVAdapterDisplay::SetChatMessage(const char* const role, const char* const 
     //   1) 聊天屏在前台 -> 历史滚动气泡（双侧）。
     //   2) 数字人屏在前台 -> user 走底部气泡，bot 走 gif 左上方气泡。
     //   3) 其它屏 -> 直接丢弃，避免在后台无界堆积。
-    const bool chat_active = ChatScreen::IsActive();
     const bool dp_active   = DigitalPeopleScreen::IsActive();
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+    if (!dp_active) {
+        return;
+    }
+#else
+    const bool chat_active = ChatScreen::IsActive();
     if (!chat_active && !dp_active) {
         return;
     }
+#endif
 
     if (esp_lv_adapter_lock(-1) != ESP_OK) {
         return;
     }
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     if (chat_active) {
         ChatScreen::AddMessage(content,
                                is_user ? ChatMsgDir::Right : ChatMsgDir::Left);
     } else {
+#endif
         if (is_user) {
             DigitalPeopleScreen::ShowUserMessage(content);
         } else {
             DigitalPeopleScreen::ShowSystemMessage(content);
         }
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     }
+#endif
     esp_lv_adapter_unlock();
 }
 
-void LVAdapterDisplay::SetStatus(const char* const status) {}
+void LVAdapterDisplay::SetStatus(const char* const status) {
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        return;
+    }
+    DigitalPeopleScreen::SetStatus(status);
+    esp_lv_adapter_unlock();
+}
 
 void LVAdapterDisplay::ShowNotification(const char* notification, int duration_ms) {}
 

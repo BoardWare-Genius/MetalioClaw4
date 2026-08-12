@@ -1,21 +1,31 @@
 #include "digital_people_screen.h"
 #include "i18n.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "esp_lv_adapter.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <font_awesome.h>
 #include "lv_eaf.h"
 
 #include "application.h"
+#include "board.h"
 #include "device_state.h"
+#include "dual_network_board.h"
 #include "SdCardManager.hpp"
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
 #include "home_screen/home_screen.h"
+#endif
 #include "screen_util.h"
 
 LV_FONT_DECLARE(font_puhui_30_4);
 LV_FONT_DECLARE(font_puhui_20_4);
+LV_FONT_DECLARE(font_awesome_20_4);
 
 namespace {
 
@@ -48,6 +58,7 @@ constexpr size_t kRequiredEmotionCount =
 // 必须保证在调用之间一直有效，所以放在 namespace 静态。
 constexpr size_t kEmotionPathBufSize = 64;
 char s_current_emotion[24] = "neutral";
+char s_applied_emotion[24] = "";
 char s_emotion_path_buf[kEmotionPathBufSize];
 
 const char* EmotionCategoryName(const char* category) {
@@ -104,15 +115,20 @@ constexpr int32_t  kBubblePadX       = 18;
 constexpr int32_t  kBubblePadY       = 14;
 constexpr int32_t  kBubbleBorder     = 2;
 constexpr int32_t  kSideMargin       = 16;
-constexpr int32_t  kSysBubbleTop     = 24;            // 顶部安全间距
+constexpr int32_t  kSysBubbleTop     = 96;            // 给顶部状态条留空间
 constexpr int32_t  kUserBubbleBottom = 24;
 constexpr int32_t  kSysBubbleMaxW    = kPanelSize - kSideMargin * 2;       // 688
 constexpr int32_t  kUserBubbleMaxW   = kPanelSize - kSideMargin * 2;       // 688
+constexpr int32_t  kStatusWidth      = kPanelSize - kSideMargin * 2;
+constexpr int32_t  kStatusHeight     = 54;
+constexpr int32_t  kStatusTop        = 22;
 
 constexpr uint32_t kColorBubbleBg     = 0xFFFFFF;
 constexpr uint32_t kColorBubbleBorder = 0xFFFFFF;
 constexpr uint32_t kColorBubbleText   = 0x1F2937;
 constexpr uint32_t kColorHintText     = 0xC8C9CC;
+constexpr uint32_t kColorStatusBg      = 0xFFFFFF;
+constexpr uint32_t kColorStatusText    = 0x1F2937;
 constexpr lv_opa_t kBubbleBgOpa       = LV_OPA_30;
 
 struct UiState {
@@ -123,11 +139,25 @@ struct UiState {
     lv_obj_t* system_label  = nullptr;
     lv_obj_t* user_bubble   = nullptr;
     lv_obj_t* user_label    = nullptr;
+    lv_obj_t* status_pill   = nullptr;
+    lv_obj_t* status_label  = nullptr;
+    lv_obj_t* record_button = nullptr;
+    lv_obj_t* record_dot    = nullptr;
+    lv_obj_t* record_label  = nullptr;
+    lv_obj_t* network_icon  = nullptr;
+    lv_obj_t* network_type  = nullptr;
+    lv_obj_t* battery_icon  = nullptr;
+    lv_obj_t* battery_level = nullptr;
 };
 
 UiState s_ui;
+char s_current_status[96] = "待命";
 
 lv_timer_t* s_activation_guard_timer = nullptr;
+lv_timer_t* s_status_refresh_timer = nullptr;
+std::atomic_bool s_status_query_inflight{false};
+std::atomic_bool s_background_recording_active{false};
+std::atomic_bool s_background_recording_sd_ready{false};
 
 // 未激活拦截：全屏模态弹窗，不可关闭，仅能通过返回键离开。
 struct ActivationBlockedDialogUi {
@@ -137,6 +167,21 @@ ActivationBlockedDialogUi s_activation_dlg;
 bool s_activation_blocked = false;
 
 const lv_font_t* bubble_font() { return &font_puhui_30_4; }
+
+void OnDigitalPersonClicked(lv_event_t* /*e*/) {
+    if (s_activation_blocked) {
+        ESP_LOGW(TAG, "touch-to-talk ignored: device not activated");
+        return;
+    }
+
+    ESP_LOGI(TAG, "digital person tapped: toggle chat state");
+    Application::GetInstance().ToggleChatState();
+}
+
+void OnBackgroundRecordingClicked(lv_event_t* /*e*/) {
+    ESP_LOGI(TAG, "record button tapped: toggle background recording");
+    Application::GetInstance().ToggleBackgroundRecording();
+}
 
 bool EmotionFileExists(const char* name) {
     char path[96];
@@ -189,6 +234,245 @@ lv_obj_t* BuildMissingResourceHint(lv_obj_t* parent) {
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 0);
     screen_make_input_passive(hint);
     return hint;
+}
+
+struct StatusSnapshot {
+    char network_icon[8] = {};
+    char network_type[8] = {};
+    char battery_icon[8] = {};
+    char battery_level[12] = {};
+    bool battery_low = false;
+};
+
+void SetLabelTextIfChanged(lv_obj_t* label, const char* text) {
+    if (label != nullptr && text != nullptr &&
+        std::strcmp(lv_label_get_text(label), text) != 0) {
+        lv_label_set_text(label, text);
+    }
+}
+
+void ApplyStatusSnapshot(void* user_data) {
+    auto* snapshot = static_cast<StatusSnapshot*>(user_data);
+    if (snapshot != nullptr && s_ui.status_pill != nullptr) {
+        SetLabelTextIfChanged(s_ui.network_icon, snapshot->network_icon);
+        SetLabelTextIfChanged(s_ui.network_type, snapshot->network_type);
+        SetLabelTextIfChanged(s_ui.battery_icon, snapshot->battery_icon);
+        SetLabelTextIfChanged(s_ui.battery_level, snapshot->battery_level);
+
+        const uint32_t color = snapshot->battery_low
+                                   ? 0xF87171
+                                   : kColorStatusText;
+        if (s_ui.battery_icon != nullptr) {
+            lv_obj_set_style_text_color(s_ui.battery_icon, lv_color_hex(color),
+                                        LV_PART_MAIN);
+        }
+        if (s_ui.battery_level != nullptr) {
+            lv_obj_set_style_text_color(s_ui.battery_level, lv_color_hex(color),
+                                        LV_PART_MAIN);
+        }
+    }
+    delete snapshot;
+    s_status_query_inflight.store(false);
+}
+
+void QueryStatusTask(void* /*arg*/) {
+    auto* snapshot = new StatusSnapshot{};
+    Board& board = Board::GetInstance();
+
+    const char* network_icon = board.GetNetworkStateIcon();
+    std::snprintf(snapshot->network_icon, sizeof(snapshot->network_icon), "%s",
+                  network_icon != nullptr ? network_icon
+                                          : FONT_AWESOME_WIFI_SLASH);
+
+    const char* network_type = "网络";
+    if (auto* dual = dynamic_cast<DualNetworkBoard*>(&board)) {
+        network_type = dual->GetNetworkType() == NetworkType::WIFI ? "WiFi"
+                                                                   : "4G";
+    }
+    std::snprintf(snapshot->network_type, sizeof(snapshot->network_type), "%s",
+                  network_type);
+
+    int level = 0;
+    bool charging = false;
+    bool discharging = false;
+    if (board.GetBatteryLevel(level, charging, discharging)) {
+        if (level < 0) level = 0;
+        if (level > 100) level = 100;
+
+        const char* battery_icon = FONT_AWESOME_BATTERY_EMPTY;
+        if (charging) {
+            battery_icon = FONT_AWESOME_BATTERY_BOLT;
+        } else if (level >= 80) {
+            battery_icon = FONT_AWESOME_BATTERY_FULL;
+        } else if (level >= 60) {
+            battery_icon = FONT_AWESOME_BATTERY_THREE_QUARTERS;
+        } else if (level >= 40) {
+            battery_icon = FONT_AWESOME_BATTERY_HALF;
+        } else if (level >= 20) {
+            battery_icon = FONT_AWESOME_BATTERY_QUARTER;
+        }
+        std::snprintf(snapshot->battery_icon, sizeof(snapshot->battery_icon),
+                      "%s", battery_icon);
+        std::snprintf(snapshot->battery_level, sizeof(snapshot->battery_level),
+                      "%d%%", level);
+        snapshot->battery_low = !charging && level < 20;
+    } else {
+        std::snprintf(snapshot->battery_icon, sizeof(snapshot->battery_icon),
+                      "%s", FONT_AWESOME_BATTERY_SLASH);
+        std::snprintf(snapshot->battery_level, sizeof(snapshot->battery_level),
+                      "--%%");
+    }
+
+    if (lv_async_call(ApplyStatusSnapshot, snapshot) != LV_RESULT_OK) {
+        delete snapshot;
+        s_status_query_inflight.store(false);
+    }
+    vTaskDelete(nullptr);
+}
+
+void StartStatusQuery() {
+    bool expected = false;
+    if (!s_status_query_inflight.compare_exchange_strong(expected, true)) {
+        return;
+    }
+    if (xTaskCreate(QueryStatusTask, "dp_status", 4096, nullptr, 2, nullptr) !=
+        pdPASS) {
+        ESP_LOGW(TAG, "failed to start status query task");
+        s_status_query_inflight.store(false);
+    }
+}
+
+void OnStatusRefreshTimer(lv_timer_t* /*timer*/) { StartStatusQuery(); }
+
+void ApplyBackgroundRecordingState() {
+    if (s_ui.record_button == nullptr || s_ui.record_dot == nullptr ||
+        s_ui.record_label == nullptr) {
+        return;
+    }
+    if (!s_background_recording_active.load()) {
+        lv_obj_set_style_bg_color(s_ui.record_button, lv_color_hex(0xF3F4F6),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_ui.record_dot, lv_color_hex(0x9CA3AF),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_text_color(s_ui.record_label, lv_color_hex(0x4B5563),
+                                    LV_PART_MAIN);
+        lv_label_set_text(s_ui.record_label, "记录");
+        return;
+    }
+
+    const bool sd_ready = s_background_recording_sd_ready.load();
+    const uint32_t color = sd_ready ? 0xEF4444 : 0xF59E0B;
+    lv_obj_set_style_bg_color(s_ui.record_button,
+                              lv_color_hex(sd_ready ? 0xFEE2E2 : 0xFEF3C7),
+                              LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_ui.record_dot, lv_color_hex(color), LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_ui.record_label, lv_color_hex(color), LV_PART_MAIN);
+    lv_label_set_text(s_ui.record_label, sd_ready ? "停止" : "无SD");
+}
+
+void ApplyBackgroundRecordingStateAsync(void* /*arg*/) {
+    ApplyBackgroundRecordingState();
+}
+
+void BuildStatusIndicator(lv_obj_t* parent) {
+    lv_obj_t* pill = lv_obj_create(parent);
+    screen_strip_obj_chrome(pill);
+    lv_obj_add_flag(pill, LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_size(pill, kStatusWidth, kStatusHeight);
+    lv_obj_align(pill, LV_ALIGN_TOP_MID, 0, kStatusTop);
+    lv_obj_set_style_bg_color(pill, lv_color_hex(kColorStatusBg), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_border_color(pill, lv_color_hex(0xD1D5DB), LV_PART_MAIN);
+    lv_obj_set_style_border_width(pill, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(pill, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_remove_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* network_icon = lv_label_create(pill);
+    lv_label_set_text(network_icon, FONT_AWESOME_WIFI);
+    lv_obj_set_style_text_color(network_icon, lv_color_hex(kColorStatusText),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_font(network_icon, &font_awesome_20_4, LV_PART_MAIN);
+    lv_obj_align(network_icon, LV_ALIGN_LEFT_MID, 16, 0);
+
+    lv_obj_t* network_type = lv_label_create(pill);
+    lv_label_set_text(network_type, "WiFi");
+    lv_obj_set_style_text_color(network_type, lv_color_hex(kColorStatusText),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_font(network_type, &font_puhui_20_4, LV_PART_MAIN);
+    lv_obj_align(network_type, LV_ALIGN_LEFT_MID, 48, 0);
+
+    lv_obj_t* label = lv_label_create(pill);
+    lv_label_set_text(label, s_current_status);
+    lv_obj_set_style_text_color(label, lv_color_hex(kColorStatusText),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_font(label, &font_puhui_20_4, LV_PART_MAIN);
+    lv_obj_align(label, LV_ALIGN_CENTER, 34, 0);
+
+    lv_obj_t* record_button = lv_button_create(pill);
+    screen_strip_obj_chrome(record_button);
+    lv_obj_set_size(record_button, 120, 40);
+    lv_obj_align(record_button, LV_ALIGN_CENTER, -98, 0);
+    lv_obj_set_style_bg_opa(record_button, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(record_button, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(record_button, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(record_button, OnBackgroundRecordingClicked,
+                        LV_EVENT_CLICKED, nullptr);
+    screen_swipe_back_ignore(record_button);
+
+    lv_obj_t* record_dot = lv_obj_create(record_button);
+    screen_strip_obj_chrome(record_dot);
+    lv_obj_set_size(record_dot, 11, 11);
+    lv_obj_set_style_radius(record_dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(record_dot, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(record_dot, 0, LV_PART_MAIN);
+    lv_obj_align(record_dot, LV_ALIGN_LEFT_MID, 13, 0);
+    screen_make_input_passive(record_dot);
+
+    lv_obj_t* record_label = lv_label_create(record_button);
+    lv_obj_set_style_text_font(record_label, &font_puhui_20_4, LV_PART_MAIN);
+    lv_obj_align(record_label, LV_ALIGN_CENTER, 11, 0);
+    screen_make_input_passive(record_label);
+
+    lv_obj_t* battery_icon = lv_label_create(pill);
+    lv_label_set_text(battery_icon, FONT_AWESOME_BATTERY_FULL);
+    lv_obj_set_style_text_color(battery_icon, lv_color_hex(kColorStatusText),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_font(battery_icon, &font_awesome_20_4, LV_PART_MAIN);
+    lv_obj_align(battery_icon, LV_ALIGN_RIGHT_MID, -16, 0);
+
+    lv_obj_t* battery_level = lv_label_create(pill);
+    lv_label_set_text(battery_level, "--%");
+    lv_obj_set_width(battery_level, 72);
+    lv_obj_set_style_text_align(battery_level, LV_TEXT_ALIGN_RIGHT,
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_color(battery_level, lv_color_hex(kColorStatusText),
+                                LV_PART_MAIN);
+    lv_obj_set_style_text_font(battery_level, &font_puhui_20_4, LV_PART_MAIN);
+    lv_obj_align(battery_level, LV_ALIGN_RIGHT_MID, -49, 0);
+
+    // 状态条本身不拦截点击，仅“记录/停止”子按钮接收输入。
+    lv_obj_remove_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+    screen_make_input_passive(network_icon);
+    screen_make_input_passive(network_type);
+    screen_make_input_passive(label);
+    screen_make_input_passive(battery_icon);
+    screen_make_input_passive(battery_level);
+    s_ui.status_pill = pill;
+    s_ui.status_label = label;
+    s_ui.record_button = record_button;
+    s_ui.record_dot = record_dot;
+    s_ui.record_label = record_label;
+    s_ui.network_icon = network_icon;
+    s_ui.network_type = network_type;
+    s_ui.battery_icon = battery_icon;
+    s_ui.battery_level = battery_level;
+
+    ApplyBackgroundRecordingState();
+
+    StartStatusQuery();
+    s_status_refresh_timer =
+        lv_timer_create(OnStatusRefreshTimer, 5000, nullptr);
 }
 
 void StyleBubble(lv_obj_t* bubble) {
@@ -380,6 +664,9 @@ void on_activation_guard_timer(lv_timer_t* /*timer*/) {
 }
 
 void OnSwipeBack() {
+#if CONFIG_DIGITAL_PEOPLE_ONLY
+    ESP_LOGI(TAG, "dedicated mode: remain on digital people screen");
+#else
     lv_indev_t* indev = lv_indev_active();
     if (indev != nullptr) {
         lv_indev_wait_release(indev);
@@ -390,12 +677,17 @@ void OnSwipeBack() {
     if (old_scr != nullptr && old_scr != home) {
         lv_obj_delete_async(old_scr);
     }
+#endif
 }
 
 void OnScreenUnloaded(lv_event_t* /*e*/) {
     if (s_activation_guard_timer != nullptr) {
         lv_timer_delete(s_activation_guard_timer);
         s_activation_guard_timer = nullptr;
+    }
+    if (s_status_refresh_timer != nullptr) {
+        lv_timer_delete(s_status_refresh_timer);
+        s_status_refresh_timer = nullptr;
     }
     s_activation_dlg = ActivationBlockedDialogUi{};
     s_activation_blocked = false;
@@ -406,6 +698,16 @@ void OnScreenUnloaded(lv_event_t* /*e*/) {
     s_ui.system_label  = nullptr;
     s_ui.user_bubble   = nullptr;
     s_ui.user_label    = nullptr;
+    s_ui.status_pill   = nullptr;
+    s_ui.status_label  = nullptr;
+    s_ui.record_button = nullptr;
+    s_ui.record_dot    = nullptr;
+    s_ui.record_label  = nullptr;
+    s_ui.network_icon  = nullptr;
+    s_ui.network_type  = nullptr;
+    s_ui.battery_icon  = nullptr;
+    s_ui.battery_level = nullptr;
+    s_applied_emotion[0] = '\0';
 }
 
 }  // namespace
@@ -436,9 +738,18 @@ lv_obj_t* DigitalPeopleScreen::Create() {
     } else {
         s_ui.eaf = CreateEmotionWidget(scr);
         SetEmotionSrc(s_ui.eaf, s_current_emotion);
+        std::strncpy(s_applied_emotion, s_current_emotion,
+                     sizeof(s_applied_emotion) - 1);
+        s_applied_emotion[sizeof(s_applied_emotion) - 1] = '\0';
         lv_image_set_inner_align(s_ui.eaf, LV_IMAGE_ALIGN_CONTAIN);
         lv_obj_center(s_ui.eaf);
         screen_make_input_passive(s_ui.eaf);
+        // 默认让动画的内部对象全部不消费输入，再单独恢复最外层数字人
+        // 图层的点击能力。这样点击人物可以开始/结束对话，同时气泡仍然
+        // 保持输入穿透，也不会把整块屏幕都变成误触发区域。
+        lv_obj_add_flag(s_ui.eaf, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_ui.eaf, OnDigitalPersonClicked,
+                            LV_EVENT_CLICKED, nullptr);
     }
 
     // 两个气泡：system 锚到左上（让出 back 按钮位置），user 锚到底部居中。
@@ -454,7 +765,11 @@ lv_obj_t* DigitalPeopleScreen::Create() {
         s_ui.user_label  = usr.label;
     }
 
+    BuildStatusIndicator(scr);
+
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
     screen_attach_swipe_back(scr, OnSwipeBack);
+#endif
     lv_obj_add_event_cb(scr, OnScreenUnloaded, LV_EVENT_SCREEN_UNLOADED,
                         nullptr);
 
@@ -506,6 +821,39 @@ void DigitalPeopleScreen::ClearMessages() {
     }
 }
 
+void DigitalPeopleScreen::SetStatus(const char* status) {
+    if (status == nullptr || status[0] == '\0') {
+        status = "待命";
+    }
+    std::strncpy(s_current_status, status, sizeof(s_current_status) - 1);
+    s_current_status[sizeof(s_current_status) - 1] = '\0';
+
+    ESP_LOGI(TAG, "SetStatus -> %s", s_current_status);
+    if (s_ui.status_label != nullptr) {
+        lv_label_set_text(s_ui.status_label, s_current_status);
+        lv_obj_align(s_ui.status_label, LV_ALIGN_CENTER, 34, 0);
+    }
+}
+
+void DigitalPeopleScreen::SetBackgroundRecordingState(bool active,
+                                                       bool sd_ready) {
+    s_background_recording_active.store(active);
+    s_background_recording_sd_ready.store(sd_ready);
+    if (s_ui.record_button == nullptr || s_ui.record_dot == nullptr ||
+        s_ui.record_label == nullptr) {
+        return;
+    }
+    // This method is called by the recorder/uploader tasks.  Updating LVGL
+    // directly from those tasks can time out on the adapter lock, leaving the
+    // recorder running while the button still looks idle.  Queue the refresh
+    // onto LVGL's own event context instead; the atomics above remain the
+    // source of truth if several state updates are coalesced.
+    if (lv_async_call(ApplyBackgroundRecordingStateAsync, nullptr) !=
+        LV_RESULT_OK) {
+        ESP_LOGW(TAG, "failed to queue background recording UI refresh");
+    }
+}
+
 void DigitalPeopleScreen::LifecycleCallback(screen_lifecycle_event_t event) {
     auto& audio_service = Application::GetInstance().GetAudioService();
     if (event == SCREEN_LIFECYCLE_LOAD) {
@@ -528,6 +876,10 @@ void DigitalPeopleScreen::SetEmotion(const char* category) {
     if (category == nullptr || category[0] == '\0') {
         category = kDefaultEmotion;
     }
+    const bool already_applied =
+        s_ui.eaf != nullptr && s_applied_emotion[0] != '\0' &&
+        std::strcmp(s_applied_emotion, category) == 0;
+
     // 同步更新静态缓存：屏幕不在前台时也能记住请求，下次 Create()
     // 走 BuildEmotionPath(s_current_emotion) 时就会用上。
     std::strncpy(s_current_emotion, category, sizeof(s_current_emotion) - 1);
@@ -537,7 +889,12 @@ void DigitalPeopleScreen::SetEmotion(const char* category) {
 
     // 在前台才真的替换表情源；调用方必须已经持有 LVGL 主锁
     // （和 ShowUserMessage / ShowSystemMessage 一致的约定）。
-    if (s_ui.eaf != nullptr) {
+    if (s_ui.eaf != nullptr && !already_applied) {
         SetEmotionSrc(s_ui.eaf, s_current_emotion);
+        std::strncpy(s_applied_emotion, s_current_emotion,
+                     sizeof(s_applied_emotion) - 1);
+        s_applied_emotion[sizeof(s_applied_emotion) - 1] = '\0';
+    } else if (already_applied) {
+        ESP_LOGD(TAG, "skip unchanged emotion: %s", s_current_emotion);
     }
 }

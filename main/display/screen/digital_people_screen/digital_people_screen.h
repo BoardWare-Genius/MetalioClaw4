@@ -18,6 +18,9 @@
 //
 // 进入页面前检查设备是否已激活；未激活时弹出不可关闭的拦截弹窗（含返回
 // 按钮），背后页面内容保持可见但不可操作，并打印日志。
+// 顶部状态栏显示当前对话状态、网络类型/信号和电池电量；点击数字人本体
+// 会切换对话状态，唤醒词仍然保留。激活拦截弹窗显示时，点击事件不会
+// 启动对话。
 //
 // 对话气泡：
 //   - ShowUserMessage(): 用户说的话 -> 屏幕底部气泡（gif 下方）。
@@ -34,6 +37,8 @@ public:
     static void ShowUserMessage(const char* text);
     static void ShowSystemMessage(const char* text);
     static void ClearMessages();
+    static void SetStatus(const char* status);
+    static void SetBackgroundRecordingState(bool active, bool sd_ready);
 
     // 切换数字人屏正在播放的表情动画 / 静态图。
     // category 必须是 6 个大类之一：crying / happy / loving / neutral /
