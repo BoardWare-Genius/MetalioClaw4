@@ -175,6 +175,51 @@ void McpServer::AddUserOnlyTools() {
             return true;
         });
 
+#if CONFIG_ESP_CLAW_AGENT
+    AddUserOnlyTool(
+        "self.esp_claw.get_state",
+        "Get ESP-Claw mode and configuration state. The API key is never returned.",
+        PropertyList(),
+        [](const PropertyList&) -> ReturnValue {
+            auto& app = Application::GetInstance();
+            cJSON* state = cJSON_CreateObject();
+            cJSON_AddBoolToObject(state, "enabled", app.IsEspClawMode());
+            cJSON_AddBoolToObject(state, "configured",
+                                  app.IsEspClawConfigured());
+            cJSON_AddBoolToObject(state, "background_recording",
+                                  app.IsBackgroundRecording());
+            cJSON_AddStringToObject(state, "config",
+                                    app.GetEspClawConfigSummary().c_str());
+            return state;
+        });
+
+    AddUserOnlyTool(
+        "self.esp_claw.configure",
+        "Configure the in-process ESP-Claw LLM runtime. Use only after the user explicitly provides all four values.",
+        PropertyList({
+            Property("api_key", kPropertyTypeString),
+            Property("base_url", kPropertyTypeString),
+            Property("model", kPropertyTypeString),
+            Property("backend", kPropertyTypeString, "openai_compatible"),
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            return Application::GetInstance().ConfigureEspClaw(
+                properties["api_key"].value<std::string>(),
+                properties["base_url"].value<std::string>(),
+                properties["model"].value<std::string>(),
+                properties["backend"].value<std::string>());
+        });
+
+    AddUserOnlyTool(
+        "self.esp_claw.set_enabled",
+        "Switch between the normal digital-person agent and ESP-Claw without rebooting or stopping background recording.",
+        PropertyList({Property("enabled", kPropertyTypeBoolean)}),
+        [](const PropertyList& properties) -> ReturnValue {
+            return Application::GetInstance().SetEspClawMode(
+                properties["enabled"].value<bool>());
+        });
+#endif
+
     // Firmware upgrade
     AddUserOnlyTool("self.upgrade_firmware", "Upgrade firmware from a specific URL. This will download and install the firmware, then reboot the device.",
         PropertyList({

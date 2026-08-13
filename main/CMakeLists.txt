@@ -87,6 +87,8 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/websocket_protocol.cc"
             "mcp_server.cc"
             "background_capture_service.cc"
+            "esp_claw_service.cc"
+            "esp_claw_builtin_skills.cc"
             "system_info.cc"
             "application.cc"
             "ota.cc"
@@ -322,9 +324,26 @@ if(CONFIG_IDF_TARGET_ESP32)
                              )
 endif()
 
+set(PRIVATE_REQUIRES "")
+if(CONFIG_ESP_CLAW_AGENT)
+    list(APPEND SOURCES "esp_claw_game_ui.cc")
+    list(APPEND PRIVATE_REQUIRES
+        claw_core
+        claw_cap
+        claw_memory
+        claw_skill
+        cap_files
+        cap_lua
+        cap_skill_mgr
+        lua_module_delay
+        lua_module_json
+    )
+endif()
+
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
+                    PRIV_REQUIRES ${PRIVATE_REQUIRES}
                     WHOLE_ARCHIVE
                     )
 

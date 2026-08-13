@@ -24,6 +24,12 @@ CONFIG_BACKGROUND_RECORDING_AUDIO_SEGMENT_MS=30000
 CONFIG_BACKGROUND_RECORDING_UPLOAD_URL="http://172.19.0.245:8788/api/v1/media/upload"
 CONFIG_BACKGROUND_RECORDING_UPLOAD_TOKEN="dev-token"
 CONFIG_BACKGROUND_RECORDING_UPLOAD_TIMEOUT_MS=15000
+CONFIG_ESP_CLAW_AGENT=y
+
+# esp-claw master currently calls an esp_http_client pooling API introduced
+# after IDF 5.5.4. Keep its optional pool disabled; claw_core still uses the
+# normal ESP-IDF HTTP client.
+# CONFIG_HTTP_REUSE_ENABLE is not set
 
 CONFIG_CAMERA_OV2710_MIPI_RAW10_1280X720_25FPS=y
 

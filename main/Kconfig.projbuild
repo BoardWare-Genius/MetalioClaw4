@@ -111,6 +111,46 @@ config CUSTOM_AGENT_PROFILE
         Mode sent in the Chat-Mode WebSocket header. The direct service
         currently uses normal mode.
 
+menuconfig ESP_CLAW_AGENT
+    bool "Enable in-process ESP-Claw agent mode"
+    default y if DIGITAL_PEOPLE_ONLY
+    default n
+    help
+        Build Espressif's official claw_core into this firmware. The existing
+        microphone, camera, display, network and continuous recorder remain
+        owned by MetalioClaw; only final ASR text is routed to ESP-Claw.
+
+if ESP_CLAW_AGENT
+
+config ESP_CLAW_LLM_BACKEND
+    string "ESP-Claw LLM backend"
+    default "openai_compatible"
+
+config ESP_CLAW_LLM_BASE_URL
+    string "ESP-Claw OpenAI-compatible base URL"
+    default ""
+    help
+        For example https://api.openai.com/v1. Runtime values saved in the
+        esp_claw NVS namespace take precedence over this build-time default.
+
+config ESP_CLAW_LLM_MODEL
+    string "ESP-Claw model"
+    default ""
+
+config ESP_CLAW_LLM_API_KEY
+    string "ESP-Claw API key"
+    default ""
+    help
+        Prefer provisioning this at runtime through the
+        self.esp_claw.configure MCP tool so the key is not committed in
+        sdkconfig.
+
+config ESP_CLAW_SYSTEM_PROMPT
+    string "ESP-Claw system prompt"
+    default "You are ESP-Claw running locally on a Metalio Claw 4 device. Reply concisely in the user's language. Use device tools when helpful, but change background recording only when the user explicitly asks."
+
+endif
+
 choice
     prompt "Flash Assets"
     default FLASH_DEFAULT_ASSETS

@@ -122,6 +122,9 @@ constexpr int32_t  kUserBubbleMaxW   = kPanelSize - kSideMargin * 2;       // 68
 constexpr int32_t  kStatusWidth      = kPanelSize - kSideMargin * 2;
 constexpr int32_t  kStatusHeight     = 54;
 constexpr int32_t  kStatusTop        = 22;
+// The message sits in the gap between the recording and agent buttons.
+constexpr int32_t  kStatusMessageWidth = 132;
+constexpr int32_t  kStatusMessageOffsetX = 18;
 
 constexpr uint32_t kColorBubbleBg     = 0xFFFFFF;
 constexpr uint32_t kColorBubbleBorder = 0xFFFFFF;
@@ -144,6 +147,8 @@ struct UiState {
     lv_obj_t* record_button = nullptr;
     lv_obj_t* record_dot    = nullptr;
     lv_obj_t* record_label  = nullptr;
+    lv_obj_t* agent_button  = nullptr;
+    lv_obj_t* agent_label   = nullptr;
     lv_obj_t* network_icon  = nullptr;
     lv_obj_t* network_type  = nullptr;
     lv_obj_t* battery_icon  = nullptr;
@@ -158,6 +163,8 @@ lv_timer_t* s_status_refresh_timer = nullptr;
 std::atomic_bool s_status_query_inflight{false};
 std::atomic_bool s_background_recording_active{false};
 std::atomic_bool s_background_recording_sd_ready{false};
+std::atomic_bool s_esp_claw_enabled{false};
+std::atomic_bool s_esp_claw_configured{false};
 
 // 未激活拦截：全屏模态弹窗，不可关闭，仅能通过返回键离开。
 struct ActivationBlockedDialogUi {
@@ -178,9 +185,23 @@ void OnDigitalPersonClicked(lv_event_t* /*e*/) {
     Application::GetInstance().ToggleChatState();
 }
 
+void OnDigitalPersonDoubleClicked(lv_event_t* e) {
+    if (s_activation_blocked) {
+        return;
+    }
+    lv_event_stop_bubbling(e);
+    ESP_LOGI(TAG, "digital person double-tapped: cancel ESP-Claw request");
+    Application::GetInstance().CancelEspClawRequest();
+}
+
 void OnBackgroundRecordingClicked(lv_event_t* /*e*/) {
     ESP_LOGI(TAG, "record button tapped: toggle background recording");
     Application::GetInstance().ToggleBackgroundRecording();
+}
+
+void OnAgentModeClicked(lv_event_t* /*e*/) {
+    ESP_LOGI(TAG, "agent mode button tapped");
+    Application::GetInstance().ToggleEspClawMode();
 }
 
 bool EmotionFileExists(const char* name) {
@@ -374,6 +395,28 @@ void ApplyBackgroundRecordingStateAsync(void* /*arg*/) {
     ApplyBackgroundRecordingState();
 }
 
+void ApplyEspClawMode() {
+    if (s_ui.agent_button == nullptr || s_ui.agent_label == nullptr) {
+        return;
+    }
+    const bool enabled = s_esp_claw_enabled.load();
+    const bool configured = s_esp_claw_configured.load();
+    lv_obj_set_style_bg_color(
+        s_ui.agent_button,
+        lv_color_hex(enabled ? 0xDBEAFE : (configured ? 0xF3F4F6 : 0xFEF3C7)),
+        LV_PART_MAIN);
+    lv_obj_set_style_text_color(
+        s_ui.agent_label,
+        lv_color_hex(enabled ? 0x2563EB : (configured ? 0x4B5563 : 0xD97706)),
+        LV_PART_MAIN);
+    lv_label_set_text(s_ui.agent_label,
+                      enabled ? "Claw" : (configured ? "数字人" : "未配置"));
+}
+
+void ApplyEspClawModeAsync(void* /*arg*/) {
+    ApplyEspClawMode();
+}
+
 void BuildStatusIndicator(lv_obj_t* parent) {
     lv_obj_t* pill = lv_obj_create(parent);
     screen_strip_obj_chrome(pill);
@@ -407,12 +450,15 @@ void BuildStatusIndicator(lv_obj_t* parent) {
     lv_obj_set_style_text_color(label, lv_color_hex(kColorStatusText),
                                 LV_PART_MAIN);
     lv_obj_set_style_text_font(label, &font_puhui_20_4, LV_PART_MAIN);
-    lv_obj_align(label, LV_ALIGN_CENTER, 34, 0);
+    lv_obj_set_width(label, kStatusMessageWidth);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_align(label, LV_ALIGN_CENTER, kStatusMessageOffsetX, 0);
 
     lv_obj_t* record_button = lv_button_create(pill);
     screen_strip_obj_chrome(record_button);
     lv_obj_set_size(record_button, 120, 40);
-    lv_obj_align(record_button, LV_ALIGN_CENTER, -98, 0);
+    lv_obj_align(record_button, LV_ALIGN_CENTER, -116, 0);
     lv_obj_set_style_bg_opa(record_button, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(record_button, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_shadow_width(record_button, 0, LV_PART_MAIN);
@@ -433,6 +479,22 @@ void BuildStatusIndicator(lv_obj_t* parent) {
     lv_obj_set_style_text_font(record_label, &font_puhui_20_4, LV_PART_MAIN);
     lv_obj_align(record_label, LV_ALIGN_CENTER, 11, 0);
     screen_make_input_passive(record_label);
+
+    lv_obj_t* agent_button = lv_button_create(pill);
+    screen_strip_obj_chrome(agent_button);
+    lv_obj_set_size(agent_button, 104, 40);
+    lv_obj_align(agent_button, LV_ALIGN_CENTER, 144, 0);
+    lv_obj_set_style_bg_opa(agent_button, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(agent_button, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(agent_button, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(agent_button, OnAgentModeClicked, LV_EVENT_CLICKED,
+                        nullptr);
+    screen_swipe_back_ignore(agent_button);
+
+    lv_obj_t* agent_label = lv_label_create(agent_button);
+    lv_obj_set_style_text_font(agent_label, &font_puhui_20_4, LV_PART_MAIN);
+    lv_obj_center(agent_label);
+    screen_make_input_passive(agent_label);
 
     lv_obj_t* battery_icon = lv_label_create(pill);
     lv_label_set_text(battery_icon, FONT_AWESOME_BATTERY_FULL);
@@ -463,12 +525,15 @@ void BuildStatusIndicator(lv_obj_t* parent) {
     s_ui.record_button = record_button;
     s_ui.record_dot = record_dot;
     s_ui.record_label = record_label;
+    s_ui.agent_button = agent_button;
+    s_ui.agent_label = agent_label;
     s_ui.network_icon = network_icon;
     s_ui.network_type = network_type;
     s_ui.battery_icon = battery_icon;
     s_ui.battery_level = battery_level;
 
     ApplyBackgroundRecordingState();
+    ApplyEspClawMode();
 
     StartStatusQuery();
     s_status_refresh_timer =
@@ -703,6 +768,8 @@ void OnScreenUnloaded(lv_event_t* /*e*/) {
     s_ui.record_button = nullptr;
     s_ui.record_dot    = nullptr;
     s_ui.record_label  = nullptr;
+    s_ui.agent_button  = nullptr;
+    s_ui.agent_label   = nullptr;
     s_ui.network_icon  = nullptr;
     s_ui.network_type  = nullptr;
     s_ui.battery_icon  = nullptr;
@@ -750,6 +817,8 @@ lv_obj_t* DigitalPeopleScreen::Create() {
         lv_obj_add_flag(s_ui.eaf, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(s_ui.eaf, OnDigitalPersonClicked,
                             LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(s_ui.eaf, OnDigitalPersonDoubleClicked,
+                            LV_EVENT_DOUBLE_CLICKED, nullptr);
     }
 
     // 两个气泡：system 锚到左上（让出 back 按钮位置），user 锚到底部居中。
@@ -831,7 +900,8 @@ void DigitalPeopleScreen::SetStatus(const char* status) {
     ESP_LOGI(TAG, "SetStatus -> %s", s_current_status);
     if (s_ui.status_label != nullptr) {
         lv_label_set_text(s_ui.status_label, s_current_status);
-        lv_obj_align(s_ui.status_label, LV_ALIGN_CENTER, 34, 0);
+        lv_obj_align(s_ui.status_label, LV_ALIGN_CENTER,
+                     kStatusMessageOffsetX, 0);
     }
 }
 
@@ -851,6 +921,17 @@ void DigitalPeopleScreen::SetBackgroundRecordingState(bool active,
     if (lv_async_call(ApplyBackgroundRecordingStateAsync, nullptr) !=
         LV_RESULT_OK) {
         ESP_LOGW(TAG, "failed to queue background recording UI refresh");
+    }
+}
+
+void DigitalPeopleScreen::SetEspClawMode(bool enabled, bool configured) {
+    s_esp_claw_enabled.store(enabled);
+    s_esp_claw_configured.store(configured);
+    if (s_ui.agent_button == nullptr || s_ui.agent_label == nullptr) {
+        return;
+    }
+    if (lv_async_call(ApplyEspClawModeAsync, nullptr) != LV_RESULT_OK) {
+        ESP_LOGW(TAG, "failed to queue ESP-Claw mode UI refresh");
     }
 }
 

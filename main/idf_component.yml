@@ -33,7 +33,8 @@ dependencies:
     rules:
     - if: target not in [esp32]
   espressif/esp_lcd_touch_ft5x06: ~1.0.7
-  espressif/esp_lcd_touch_gt911: ^1
+  # Keep the board-tested touch driver while solving new ESP-Claw dependencies.
+  espressif/esp_lcd_touch_gt911: ==1.2.0~3
   espressif/esp_lcd_touch_gt1151: ^1
   waveshare/esp_lcd_touch_cst9217: ^1.0.3
   espressif/esp_lcd_touch_cst816s: ^1.0.6
@@ -111,6 +112,8 @@ dependencies:
   # HLS（m3u8）电台：为 esp_audio_simple_player 注册 io_hls
   # 钉 1.0.2：1.0.3 要求 gmf_io^1.0，与本工程 gmf_io^0.8 / simple_player 不兼容
   espressif/esp_hls_stream: ==1.0.2
+  # Keep the extractor paired with the tested HLS stack.
+  espressif/esp_extractor: ==1.0.3
   # 电台页频谱律动（Q15 实数 FFT）
   espressif/gmf_fft: ^1.0.0
   # SD 卡页虚拟 U 盘（TinyUSB MSC）；仅 P4 板使用 GPIO24/25 与 USJ 切换

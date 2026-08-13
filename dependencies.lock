@@ -77,6 +77,12 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.5.5
+  claw_utils:
+    dependencies: []
+    source:
+      path: /home/verachen/Workspace/MetalioClaw4/third_party/esp-claw/components/claw_modules/claw_utils
+      type: local
+    version: '*'
   espressif/adc_battery_estimation:
     component_hash: b915167c87ed5a84b13d680bd011c2ed9a15121f1e247c6903141b9f138f3606
     dependencies:
@@ -123,6 +129,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 4.1.7
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.7.19~2
   espressif/cmake_utilities:
     component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
     dependencies:
@@ -307,7 +323,7 @@ dependencies:
     component_hash: a0a68d2ec10e63dc6e4f0c8bfc9e6bbc8aa9673dd6c443f335b2013f9197a8b8
     dependencies: []
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.0.3
   espressif/esp_h264:
@@ -1145,6 +1161,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.1.1
+  georgik/lua:
+    component_hash: 10698fd2d729b63cca8b882e219c3fa3bd8a9adea26f814f2febb624d0385c23
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 5.5.0~7
   idf:
     source:
       type: idf
@@ -1244,13 +1270,16 @@ direct_dependencies:
 - 78/esp_lcd_nv3023
 - 78/uart-uhci
 - 78/xiaozhi-fonts
+- claw_utils
 - espressif/adc_battery_estimation
 - espressif/adc_mic
 - espressif/button
+- espressif/cjson
 - espressif/esp-sr
 - espressif/esp32_p4_function_ev_board
 - espressif/esp_audio_simple_player
 - espressif/esp_codec_dev
+- espressif/esp_extractor
 - espressif/esp_hls_stream
 - espressif/esp_hosted
 - espressif/esp_image_effects
@@ -1286,6 +1315,7 @@ direct_dependencies:
 - espressif/knob
 - espressif/led_strip
 - espressif2022/image_player
+- georgik/lua
 - idf
 - llgok/cpp_bus_driver
 - lvgl/lvgl
@@ -1294,6 +1324,6 @@ direct_dependencies:
 - waveshare/esp_lcd_sh8601
 - waveshare/esp_lcd_st7703
 - waveshare/esp_lcd_touch_cst9217
-manifest_hash: e490f36617d35a78564a2b3d2b4d34553098cf7318423ea77d322492893925eb
+manifest_hash: 444ebe252a6178c1cc44ac479f602358eed942f042edca35e2dbcfe6f32bf208
 target: esp32p4
 version: 2.0.0

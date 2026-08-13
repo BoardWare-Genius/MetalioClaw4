@@ -9,6 +9,27 @@ set(PROJECT_VER "2.0.51")
 # Add this line to disable the specific warning
 add_compile_options(-Wno-missing-field-initializers)
 
+# ESP-Claw is integrated as an in-process agent runtime.  In addition to the
+# core, expose the official sandboxed file tools and Lua runtime used by Chat
+# Coding.  Hardware-facing upstream components stay out of this build because
+# Metalio owns the display, touch, audio and camera drivers.
+set(ESP_CLAW_COMPONENT_ROOT "${CMAKE_SOURCE_DIR}/third_party/esp-claw/components")
+list(APPEND EXTRA_COMPONENT_DIRS
+    "${ESP_CLAW_COMPONENT_ROOT}/common/http_reuse"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_modules/claw_core"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_modules/claw_utils"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_modules/claw_event_router"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_modules/claw_cap"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_modules/claw_manager"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_modules/claw_skill"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_modules/claw_memory"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_capabilities/cap_files"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_capabilities/cap_lua"
+    "${ESP_CLAW_COMPONENT_ROOT}/claw_capabilities/cap_skill_mgr"
+    "${ESP_CLAW_COMPONENT_ROOT}/lua_modules/lua_module_delay"
+    "${ESP_CLAW_COMPONENT_ROOT}/lua_modules/lua_module_json"
+)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
 
@@ -30,4 +51,3 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/wakeword/srmodels.bin")
         message(WARNING "wakeword/srmodels.bin exists but srmodels_bin target not found; custom wakeword override skipped")
     endif()
 endif()
-

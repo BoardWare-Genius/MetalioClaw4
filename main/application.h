@@ -16,6 +16,7 @@
 #include "ota.h"
 #include "audio_service.h"
 #include "background_capture_service.h"
+#include "esp_claw_service.h"
 #include "device_state_event.h"
 
 
@@ -54,9 +55,26 @@ public:
     void DismissAlert();
     void AbortSpeaking(AbortReason reason);
     void ToggleChatState();
+    void CancelEspClawRequest();
     void ToggleBackgroundRecording();
+    void ToggleEspClawMode();
+    bool SetEspClawMode(bool enabled);
+    bool IsEspClawMode() const { return esp_claw_mode_.load(); }
+    bool IsEspClawConfigured() const {
+        return esp_claw_service_.IsConfigured();
+    }
+    bool ConfigureEspClaw(const std::string& api_key,
+                          const std::string& base_url,
+                          const std::string& model,
+                          const std::string& backend);
+    std::string GetEspClawConfigSummary() const {
+        return esp_claw_service_.GetConfigSummary();
+    }
     bool IsBackgroundRecording() const {
         return background_capture_service_.IsRunning();
+    }
+    bool IsBackgroundRecordingTogglePending() const {
+        return background_capture_toggle_pending_.load();
     }
     void StartListening();
     void StopListening();
@@ -95,7 +113,11 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     BackgroundCaptureService background_capture_service_;
+    EspClawService esp_claw_service_;
     std::atomic<bool> background_capture_toggle_pending_{false};
+    std::atomic<bool> esp_claw_mode_{false};
+    std::atomic<bool> esp_claw_request_inflight_{false};
+    std::atomic<bool> esp_claw_tts_active_{false};
     std::string pending_activation_code_;
     volatile bool activation_suspended_ = false;
 

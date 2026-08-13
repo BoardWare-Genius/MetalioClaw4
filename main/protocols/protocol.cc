@@ -78,6 +78,29 @@ void Protocol::SendMcpMessage(const std::string& payload) {
     SendText(message);
 }
 
+bool Protocol::SendTtsRequest(const std::string& text,
+                              const std::string& source) {
+    if (text.empty() || source.empty()) {
+        return false;
+    }
+    cJSON* root = cJSON_CreateObject();
+    if (root == nullptr) {
+        return false;
+    }
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "tts_request");
+    cJSON_AddStringToObject(root, "source", source.c_str());
+    cJSON_AddStringToObject(root, "text", text.c_str());
+    char* serialized = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (serialized == nullptr) {
+        return false;
+    }
+    const bool sent = SendText(serialized);
+    cJSON_free(serialized);
+    return sent;
+}
+
 bool Protocol::IsTimeout() const {
     const int kTimeoutSeconds = 120;
     auto now = std::chrono::steady_clock::now();

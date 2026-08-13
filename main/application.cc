@@ -26,6 +26,7 @@
 
 #ifdef HAVE_LVGL
 #include "ota_screen.h"
+#include "digital_people_screen/digital_people_screen.h"
 #if CONFIG_ALWAYS_ON_CAMERA
 #include "camera_screen/camera_screen.h"
 #endif
@@ -348,6 +349,11 @@ void Application::DismissAlert() {
 }
 
 void Application::ToggleChatState() {
+    if (IsEspClawMode() && esp_claw_request_inflight_.load()) {
+        ESP_LOGW(TAG,
+                 "Ignoring digital-person tap while ESP-Claw request is in flight");
+        return;
+    }
     if (device_state_ == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
         return;
@@ -388,6 +394,32 @@ void Application::ToggleChatState() {
     }
 }
 
+void Application::CancelEspClawRequest() {
+#if CONFIG_ESP_CLAW_AGENT
+    if (!IsEspClawMode() || !esp_claw_request_inflight_.load()) {
+        return;
+    }
+
+    // Keep the LVGL double-click callback non-blocking. The official core
+    // cancel API briefly takes its in-flight mutex, so use the application
+    // event loop rather than the display task.
+    Schedule([this]() {
+        if (!IsEspClawMode() || !esp_claw_request_inflight_.load()) {
+            return;
+        }
+        auto display = Board::GetInstance().GetDisplay();
+        display->SetStatus("正在取消");
+        display->SetEmotion("neutral");
+        if (!esp_claw_service_.CancelActiveRequest()) {
+            ESP_LOGW(TAG, "ESP-Claw request was no longer cancellable");
+            display->SetStatus("取消失败");
+            return;
+        }
+        ESP_LOGI(TAG, "ESP-Claw cancellation requested by double tap");
+    });
+#endif
+}
+
 void Application::ToggleBackgroundRecording() {
 #if CONFIG_BACKGROUND_RECORDING
     bool expected = false;
@@ -418,6 +450,62 @@ void Application::ToggleBackgroundRecording() {
 #else
     ESP_LOGW(TAG, "Background recording is disabled in project configuration");
 #endif
+}
+
+void Application::ToggleEspClawMode() {
+    SetEspClawMode(!IsEspClawMode());
+}
+
+bool Application::SetEspClawMode(bool enabled) {
+#if !CONFIG_ESP_CLAW_AGENT
+    (void)enabled;
+    Alert("ESP-Claw", "当前固件未启用 ESP-Claw", "neutral");
+    return false;
+#else
+    if (enabled && !esp_claw_service_.Start()) {
+        return false;
+    }
+
+    esp_claw_mode_.store(enabled);
+    esp_claw_request_inflight_.store(false);
+    esp_claw_tts_active_.store(false);
+    // Keep the runtime warm when returning to the normal agent. It owns no
+    // device hardware and an idle core consumes no microphone/camera input;
+    // avoiding a synchronous teardown also keeps this LVGL click path smooth.
+    {
+        Settings settings("esp_claw", true);
+        settings.SetBool("enabled", enabled);
+    }
+
+    ESP_LOGI(TAG, "Agent mode changed to %s; background recording=%s",
+             enabled ? "ESP-Claw" : "digital-person",
+             IsBackgroundRecording() ? "running" : "stopped");
+#ifdef HAVE_LVGL
+    DigitalPeopleScreen::SetEspClawMode(enabled,
+                                        esp_claw_service_.IsConfigured());
+#endif
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetChatMessage(
+        "system",
+        enabled ? "已切换到 ESP-Claw（后台录制保持运行）"
+                : "已切换到数字人（后台录制保持运行）");
+    display->SetStatus(Lang::Strings::STANDBY);
+    display->SetEmotion("neutral");
+    return true;
+#endif
+}
+
+bool Application::ConfigureEspClaw(const std::string& api_key,
+                                    const std::string& base_url,
+                                    const std::string& model,
+                                    const std::string& backend) {
+    const bool ok = esp_claw_service_.Configure(api_key, base_url, model,
+                                                backend);
+#ifdef HAVE_LVGL
+    DigitalPeopleScreen::SetEspClawMode(IsEspClawMode(),
+                                        esp_claw_service_.IsConfigured());
+#endif
+    return ok;
 }
 
 void Application::StartListening() {
@@ -574,6 +662,75 @@ void Application::Start() {
     /* Wait for the network to be ready */
     board.StartNetwork();
 
+    // ESP-Claw owns only its agent runtime.  BackgroundCaptureService remains
+    // boot-scoped and is never stopped or restarted when the agent mode changes.
+    esp_claw_service_.Initialize(
+        [this](const std::string& response) {
+            esp_claw_request_inflight_.store(false);
+            Schedule([this, response]() {
+                auto display = Board::GetInstance().GetDisplay();
+                display->SetChatMessage("assistant", response.c_str());
+                SetDeviceState(kDeviceStateIdle);
+                // The request runs while the device is already Idle, so the
+                // state setter can legitimately be a no-op. Always close the
+                // progress state explicitly.
+                display->SetEmotion("neutral");
+                esp_claw_tts_active_.store(false);
+                if (IsEspClawMode() && protocol_ != nullptr &&
+                    protocol_->IsAudioChannelOpened() &&
+                    protocol_->SendTtsRequest(response)) {
+                    display->SetStatus("语音合成");
+                    ESP_LOGI(TAG, "ESP-Claw response sent to digital-person TTS");
+                } else {
+                    display->SetStatus("完成");
+                    ESP_LOGW(TAG, "ESP-Claw TTS unavailable; keeping text response");
+                }
+            });
+        },
+        [this](const std::string& error) {
+            esp_claw_request_inflight_.store(false);
+            esp_claw_tts_active_.store(false);
+            if (error == "request cancelled") {
+                Schedule([this]() {
+                    auto display = Board::GetInstance().GetDisplay();
+                    SetDeviceState(kDeviceStateIdle);
+                    display->SetStatus("待命");
+                    display->SetEmotion("neutral");
+                    ESP_LOGI(TAG,
+                             "ESP-Claw request cancelled; returned to standby");
+                });
+                return;
+            }
+            Schedule([this, error]() {
+                auto display = Board::GetInstance().GetDisplay();
+                display->SetChatMessage("system", error.c_str());
+                SetDeviceState(kDeviceStateIdle);
+                display->SetStatus("执行失败");
+                display->SetEmotion("neutral");
+            });
+        },
+        [this](const std::string& progress) {
+            Schedule([this, progress]() {
+                if (!IsEspClawMode() ||
+                    !esp_claw_request_inflight_.load()) {
+                    return;
+                }
+                auto display = Board::GetInstance().GetDisplay();
+                display->SetStatus(progress.c_str());
+                display->SetEmotion("thinking");
+            });
+        });
+#ifdef HAVE_LVGL
+    DigitalPeopleScreen::SetEspClawMode(false,
+                                        esp_claw_service_.IsConfigured());
+#endif
+    {
+        Settings settings("esp_claw", false);
+        if (settings.GetBool("enabled", false)) {
+            SetEspClawMode(true);
+        }
+    }
+
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);
 
@@ -616,7 +773,11 @@ void Application::Start() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (device_state_ == kDeviceStateSpeaking) {
+        const bool accept_normal_tts =
+            !IsEspClawMode() && device_state_ == kDeviceStateSpeaking;
+        const bool accept_esp_claw_tts =
+            IsEspClawMode() && esp_claw_tts_active_.load();
+        if (accept_normal_tts || accept_esp_claw_tts) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -628,6 +789,7 @@ void Application::Start() {
         }
     });
     protocol_->OnAudioChannelClosed([this, &board]() {
+        esp_claw_tts_active_.store(false);
         board.SetPowerSaveMode(true);
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
@@ -638,9 +800,37 @@ void Application::Start() {
     protocol_->OnIncomingJson([this, display](const cJSON* root) {
         // Parse JSON data
         auto type = cJSON_GetObjectItem(root, "type");
+        if (!cJSON_IsString(type)) {
+            ESP_LOGW(TAG, "Incoming message is missing a string type");
+            return;
+        }
+        const cJSON* source = cJSON_GetObjectItemCaseSensitive(root, "source");
+        const bool is_esp_claw_source =
+            cJSON_IsString(source) &&
+            std::strcmp(source->valuestring, "esp_claw") == 0;
+        // In ESP-Claw mode, ignore the normal digital-person LLM/TTS turn but
+        // accept the explicitly source-tagged direct TTS generated for the
+        // ESP-Claw final response.
+        if (IsEspClawMode() &&
+            (strcmp(type->valuestring, "tts") == 0 ||
+             strcmp(type->valuestring, "llm") == 0) &&
+            !is_esp_claw_source) {
+            return;
+        }
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
+            if (!cJSON_IsString(state)) {
+                ESP_LOGW(TAG, "Incoming TTS message is missing a string state");
+                return;
+            }
             if (strcmp(state->valuestring, "start") == 0) {
+                if (IsEspClawMode() && is_esp_claw_source) {
+                    // Clear any discarded digital-person audio before opening
+                    // the gate for the source-tagged ESP-Claw Opus stream.
+                    audio_service_.ResetDecoder();
+                    esp_claw_tts_active_.store(true);
+                    ESP_LOGI(TAG, "ESP-Claw TTS stream started");
+                }
                 Schedule([this]() {
                     aborted_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
@@ -652,6 +842,10 @@ void Application::Start() {
                     display->SetStatus("思考中...");
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
+                if (IsEspClawMode() && is_esp_claw_source) {
+                    esp_claw_tts_active_.store(false);
+                    ESP_LOGI(TAG, "ESP-Claw TTS stream stopped");
+                }
                 Schedule([this, display]() {
                     if (device_state_ == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
@@ -664,6 +858,11 @@ void Application::Start() {
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
+                if (IsEspClawMode() && is_esp_claw_source) {
+                    // The complete ESP-Claw answer is already visible. Do not
+                    // replace it with one TTS segment at a time.
+                    return;
+                }
                 auto text = cJSON_GetObjectItem(root, "text");
                 auto final = cJSON_GetObjectItem(root, "final");
                 if (cJSON_IsString(text) && cJSON_IsTrue(final)) {
@@ -682,6 +881,22 @@ void Application::Start() {
                 Schedule([this, display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
                 });
+                if (IsEspClawMode()) {
+                    if (esp_claw_request_inflight_.exchange(true)) {
+                        ESP_LOGW(TAG, "Ignoring duplicate final STT while ESP-Claw is busy");
+                        return;
+                    }
+                    const std::string message(text->valuestring);
+                    protocol_->SendStopListening();
+                    Schedule([this, display]() {
+                        SetDeviceState(kDeviceStateIdle);
+                        display->SetStatus("等待提交");
+                        display->SetEmotion("thinking");
+                    });
+                    if (!esp_claw_service_.Submit(message)) {
+                        esp_claw_request_inflight_.store(false);
+                    }
+                }
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
@@ -919,7 +1134,12 @@ void Application::SetDeviceState(DeviceState state) {
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
-            audio_service_.ResetDecoder();
+            // Direct ESP-Claw TTS resets the decoder before accepting its first
+            // packet. Resetting again here could erase the beginning of speech
+            // if the network task has already queued it.
+            if (!esp_claw_tts_active_.load()) {
+                audio_service_.ResetDecoder();
+            }
             break;
         default:
             // Do nothing

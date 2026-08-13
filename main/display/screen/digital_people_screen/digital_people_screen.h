@@ -39,6 +39,7 @@ public:
     static void ClearMessages();
     static void SetStatus(const char* status);
     static void SetBackgroundRecordingState(bool active, bool sd_ready);
+    static void SetEspClawMode(bool enabled, bool configured);
 
     // 切换数字人屏正在播放的表情动画 / 静态图。
     // category 必须是 6 个大类之一：crying / happy / loving / neutral /

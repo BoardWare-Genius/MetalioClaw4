@@ -170,6 +170,20 @@ void touch_feed_attach_indev(lv_indev_t* indev) {
     lv_indev_set_read_cb(indev, IndevReadCb);
 }
 
+bool touch_feed_get_snapshot(TouchFeedSnapshot* snapshot) {
+    if (snapshot == nullptr || s_mutex == nullptr) {
+        return false;
+    }
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        return false;
+    }
+    snapshot->pressed = s_snap.pressed;
+    snapshot->x = s_snap.x;
+    snapshot->y = s_snap.y;
+    xSemaphoreGive(s_mutex);
+    return true;
+}
+
 void touch_feed_stop() {
     if (s_task != nullptr) {
         s_run = false;
