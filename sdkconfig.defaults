@@ -1,4 +1,4 @@
-# Metalio Claw 4 dedicated digital-person build defaults.
+# Beaverbeaver dedicated digital-person build defaults.
 # Keep these values here so `idf.py set-target`, fullclean, or a fresh clone
 # cannot silently fall back to ESP-IDF's 2 MB / single-app partition layout.
 CONFIG_IDF_TARGET="esp32p4"

@@ -190,7 +190,7 @@ void OnDigitalPersonDoubleClicked(lv_event_t* e) {
         return;
     }
     lv_event_stop_bubbling(e);
-    ESP_LOGI(TAG, "digital person double-tapped: cancel ESP-Claw request");
+    ESP_LOGI(TAG, "digital person double-tapped: cancel Beaver request");
     Application::GetInstance().CancelEspClawRequest();
 }
 
@@ -410,7 +410,7 @@ void ApplyEspClawMode() {
         lv_color_hex(enabled ? 0x2563EB : (configured ? 0x4B5563 : 0xD97706)),
         LV_PART_MAIN);
     lv_label_set_text(s_ui.agent_label,
-                      enabled ? "Claw" : (configured ? "数字人" : "未配置"));
+                      enabled ? "Beaver" : (configured ? "数字人" : "未配置"));
 }
 
 void ApplyEspClawModeAsync(void* /*arg*/) {
@@ -931,7 +931,7 @@ void DigitalPeopleScreen::SetEspClawMode(bool enabled, bool configured) {
         return;
     }
     if (lv_async_call(ApplyEspClawModeAsync, nullptr) != LV_RESULT_OK) {
-        ESP_LOGW(TAG, "failed to queue ESP-Claw mode UI refresh");
+        ESP_LOGW(TAG, "failed to queue Beaver mode UI refresh");
     }
 }
 

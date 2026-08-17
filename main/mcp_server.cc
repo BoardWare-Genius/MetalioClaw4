@@ -178,7 +178,7 @@ void McpServer::AddUserOnlyTools() {
 #if CONFIG_ESP_CLAW_AGENT
     AddUserOnlyTool(
         "self.esp_claw.get_state",
-        "Get ESP-Claw mode and configuration state. The API key is never returned.",
+        "Get Beaver agent mode and configuration state. The API key is never returned.",
         PropertyList(),
         [](const PropertyList&) -> ReturnValue {
             auto& app = Application::GetInstance();
@@ -195,7 +195,7 @@ void McpServer::AddUserOnlyTools() {
 
     AddUserOnlyTool(
         "self.esp_claw.configure",
-        "Configure the in-process ESP-Claw LLM runtime. Use only after the user explicitly provides all four values.",
+        "Configure the in-process Beaver agent runtime powered by ESP-Claw. Use only after the user explicitly provides all four values.",
         PropertyList({
             Property("api_key", kPropertyTypeString),
             Property("base_url", kPropertyTypeString),
@@ -212,7 +212,7 @@ void McpServer::AddUserOnlyTools() {
 
     AddUserOnlyTool(
         "self.esp_claw.set_enabled",
-        "Switch between the normal digital-person agent and ESP-Claw without rebooting or stopping background recording.",
+        "Switch between the normal digital-person agent and Beaver without rebooting or stopping background recording.",
         PropertyList({Property("enabled", kPropertyTypeBoolean)}),
         [](const PropertyList& properties) -> ReturnValue {
             return Application::GetInstance().SetEspClawMode(

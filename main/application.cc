@@ -351,7 +351,7 @@ void Application::DismissAlert() {
 void Application::ToggleChatState() {
     if (IsEspClawMode() && esp_claw_request_inflight_.load()) {
         ESP_LOGW(TAG,
-                 "Ignoring digital-person tap while ESP-Claw request is in flight");
+                 "Ignoring digital-person tap while Beaver request is in flight");
         return;
     }
     if (device_state_ == kDeviceStateActivating) {
@@ -411,11 +411,11 @@ void Application::CancelEspClawRequest() {
         display->SetStatus("正在取消");
         display->SetEmotion("neutral");
         if (!esp_claw_service_.CancelActiveRequest()) {
-            ESP_LOGW(TAG, "ESP-Claw request was no longer cancellable");
+            ESP_LOGW(TAG, "Beaver request was no longer cancellable");
             display->SetStatus("取消失败");
             return;
         }
-        ESP_LOGI(TAG, "ESP-Claw cancellation requested by double tap");
+        ESP_LOGI(TAG, "Beaver cancellation requested by double tap");
     });
 #endif
 }
@@ -459,7 +459,7 @@ void Application::ToggleEspClawMode() {
 bool Application::SetEspClawMode(bool enabled) {
 #if !CONFIG_ESP_CLAW_AGENT
     (void)enabled;
-    Alert("ESP-Claw", "当前固件未启用 ESP-Claw", "neutral");
+    Alert("Beaver", "当前固件未启用 Beaver", "neutral");
     return false;
 #else
     if (enabled && !esp_claw_service_.Start()) {
@@ -478,7 +478,7 @@ bool Application::SetEspClawMode(bool enabled) {
     }
 
     ESP_LOGI(TAG, "Agent mode changed to %s; background recording=%s",
-             enabled ? "ESP-Claw" : "digital-person",
+             enabled ? "Beaver" : "digital-person",
              IsBackgroundRecording() ? "running" : "stopped");
 #ifdef HAVE_LVGL
     DigitalPeopleScreen::SetEspClawMode(enabled,
@@ -487,7 +487,7 @@ bool Application::SetEspClawMode(bool enabled) {
     auto display = Board::GetInstance().GetDisplay();
     display->SetChatMessage(
         "system",
-        enabled ? "已切换到 ESP-Claw（后台录制保持运行）"
+        enabled ? "已切换到 Beaver（后台录制保持运行）"
                 : "已切换到数字人（后台录制保持运行）");
     display->SetStatus(Lang::Strings::STANDBY);
     display->SetEmotion("neutral");
@@ -680,10 +680,10 @@ void Application::Start() {
                     protocol_->IsAudioChannelOpened() &&
                     protocol_->SendTtsRequest(response)) {
                     display->SetStatus("语音合成");
-                    ESP_LOGI(TAG, "ESP-Claw response sent to digital-person TTS");
+                    ESP_LOGI(TAG, "Beaver response sent to digital-person TTS");
                 } else {
                     display->SetStatus("完成");
-                    ESP_LOGW(TAG, "ESP-Claw TTS unavailable; keeping text response");
+                    ESP_LOGW(TAG, "Beaver TTS unavailable; keeping text response");
                 }
             });
         },
@@ -697,7 +697,7 @@ void Application::Start() {
                     display->SetStatus("待命");
                     display->SetEmotion("neutral");
                     ESP_LOGI(TAG,
-                             "ESP-Claw request cancelled; returned to standby");
+                             "Beaver request cancelled; returned to standby");
                 });
                 return;
             }
@@ -829,7 +829,7 @@ void Application::Start() {
                     // the gate for the source-tagged ESP-Claw Opus stream.
                     audio_service_.ResetDecoder();
                     esp_claw_tts_active_.store(true);
-                    ESP_LOGI(TAG, "ESP-Claw TTS stream started");
+                    ESP_LOGI(TAG, "Beaver TTS stream started");
                 }
                 Schedule([this]() {
                     aborted_ = false;
@@ -844,7 +844,7 @@ void Application::Start() {
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 if (IsEspClawMode() && is_esp_claw_source) {
                     esp_claw_tts_active_.store(false);
-                    ESP_LOGI(TAG, "ESP-Claw TTS stream stopped");
+                    ESP_LOGI(TAG, "Beaver TTS stream stopped");
                 }
                 Schedule([this, display]() {
                     if (device_state_ == kDeviceStateSpeaking) {
@@ -883,7 +883,7 @@ void Application::Start() {
                 });
                 if (IsEspClawMode()) {
                     if (esp_claw_request_inflight_.exchange(true)) {
-                        ESP_LOGW(TAG, "Ignoring duplicate final STT while ESP-Claw is busy");
+                        ESP_LOGW(TAG, "Ignoring duplicate final STT while Beaver is busy");
                         return;
                     }
                     const std::string message(text->valuestring);

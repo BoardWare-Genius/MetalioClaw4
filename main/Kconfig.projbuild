@@ -112,33 +112,34 @@ config CUSTOM_AGENT_PROFILE
         currently uses normal mode.
 
 menuconfig ESP_CLAW_AGENT
-    bool "Enable in-process ESP-Claw agent mode"
+    bool "Enable in-process Beaver agent mode (powered by ESP-Claw)"
     default y if DIGITAL_PEOPLE_ONLY
     default n
     help
         Build Espressif's official claw_core into this firmware. The existing
         microphone, camera, display, network and continuous recorder remain
-        owned by MetalioClaw; only final ASR text is routed to ESP-Claw.
+        owned by Beaverbeaver; only final ASR text is routed to Beaver's
+        ESP-Claw runtime.
 
 if ESP_CLAW_AGENT
 
 config ESP_CLAW_LLM_BACKEND
-    string "ESP-Claw LLM backend"
+    string "Beaver LLM backend"
     default "openai_compatible"
 
 config ESP_CLAW_LLM_BASE_URL
-    string "ESP-Claw OpenAI-compatible base URL"
+    string "Beaver OpenAI-compatible base URL"
     default ""
     help
         For example https://api.openai.com/v1. Runtime values saved in the
         esp_claw NVS namespace take precedence over this build-time default.
 
 config ESP_CLAW_LLM_MODEL
-    string "ESP-Claw model"
+    string "Beaver model"
     default ""
 
 config ESP_CLAW_LLM_API_KEY
-    string "ESP-Claw API key"
+    string "Beaver API key"
     default ""
     help
         Prefer provisioning this at runtime through the
@@ -146,8 +147,8 @@ config ESP_CLAW_LLM_API_KEY
         sdkconfig.
 
 config ESP_CLAW_SYSTEM_PROMPT
-    string "ESP-Claw system prompt"
-    default "You are ESP-Claw running locally on a Metalio Claw 4 device. Reply concisely in the user's language. Use device tools when helpful, but change background recording only when the user explicitly asks."
+    string "Beaver system prompt"
+    default "You are Beaver, a local agent running on a Beaverbeaver device and powered by ESP-Claw. Your agent name and identity is Beaver, and the hardware product name is Beaverbeaver; use these names even if old conversation or profile data mentions ESP-Claw, Claw, or Metalio Claw 4. Reply concisely in the user's language. Use device tools when helpful, but change background recording only when the user explicitly asks."
 
 endif
 
@@ -258,7 +259,7 @@ choice
 endchoice
 
 config BOARD_TYPE_METALIO_CLAW_4
-    bool "Metalio Claw4 (metalio-claw-4)"
+    bool "Beaverbeaver (metalio-claw-4)"
     default y
     depends on IDF_TARGET_ESP32P4
 

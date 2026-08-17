@@ -58,7 +58,7 @@ constexpr const char* kDeviceToolsJson = R"json([
     "type":"function",
     "function":{
       "name":"get_device_status",
-      "description":"Read the current Metalio Claw device, battery, network, agent-mode and background-recording status. This does not change device state.",
+      "description":"Read the current Beaverbeaver device, battery, network, agent-mode and background-recording status. This does not change device state.",
       "parameters":{"type":"object","properties":{},"additionalProperties":false}
     }
   },
@@ -119,7 +119,7 @@ constexpr const char* kDeviceToolsJson = R"json([
     "type":"function",
     "function":{
       "name":"reset_conversation",
-      "description":"Clear the persistent ESP-Claw conversation history and active skills. Call only when the user explicitly asks to start fresh or clear this conversation. This does not delete long-term memories.",
+      "description":"Clear the persistent Beaver conversation history and active skills. Call only when the user explicitly asks to start fresh or clear this conversation. This does not delete long-term memories.",
       "parameters":{"type":"object","properties":{},"additionalProperties":false}
     }
   }
@@ -1154,7 +1154,7 @@ bool EspClawService::Configure(const std::string& api_key,
     return false;
 #else
     if (api_key.empty() || base_url.empty() || model.empty() || backend.empty()) {
-        NotifyError("ESP-Claw 配置不完整");
+        NotifyError("Beaver 配置不完整");
         return false;
     }
 
@@ -1176,19 +1176,19 @@ bool EspClawService::Configure(const std::string& api_key,
 
 bool EspClawService::Start() {
 #if !CONFIG_ESP_CLAW_AGENT
-    NotifyError("固件未启用 ESP-Claw");
+    NotifyError("固件未启用 Beaver");
     return false;
 #else
     if (running_.load()) {
         return true;
     }
     if (core_ != nullptr) {
-        NotifyError("ESP-Claw 上一次运行仍在退出，请稍后重试");
+        NotifyError("Beaver 上一次运行仍在退出，请稍后重试");
         return false;
     }
     LoadConfig();
     if (!configured_.load()) {
-        NotifyError("请先配置 ESP-Claw 的 API 地址、密钥和模型");
+        NotifyError("请先配置 Beaver 的 API 地址、密钥和模型");
         return false;
     }
 
@@ -1273,7 +1273,7 @@ bool EspClawService::Start() {
         if (core != nullptr) {
             claw_core_destroy(core);
         }
-        NotifyError(std::string("ESP-Claw 启动失败: ") + esp_err_to_name(err));
+        NotifyError(std::string("Beaver 启动失败: ") + esp_err_to_name(err));
         return false;
     }
 
@@ -1286,7 +1286,7 @@ bool EspClawService::Start() {
         claw_core_stop(core, 2000);
         claw_core_destroy(core);
         core_ = nullptr;
-        NotifyError("ESP-Claw 响应任务创建失败");
+        NotifyError("Beaver 响应任务创建失败");
         return false;
     }
     response_task_.store(task);
@@ -1346,13 +1346,13 @@ bool EspClawService::Submit(const std::string& text,
     }
     if (text == "/session new" || text == "/session reset") {
         if (!s_chat_coding_ready) {
-            NotifyError("SD 卡会话存储不可用，无法重置 ESP-Claw 会话");
+            NotifyError("SD 卡会话存储不可用，无法重置 Beaver 会话");
             return false;
         }
         ScheduleConversationReset();
         ApplyPendingConversationReset();
         if (on_response_) {
-            on_response_("已开始新的 ESP-Claw 会话，长期记忆仍然保留。");
+            on_response_("已开始新的 Beaver 会话，长期记忆仍然保留。");
         }
         return true;
     }
@@ -1379,7 +1379,7 @@ bool EspClawService::Submit(const std::string& text,
         static_cast<claw_core_handle_t>(core_), &request, 1000);
     if (err != ESP_OK) {
         request_inflight_.store(false);
-        NotifyError(std::string("ESP-Claw 请求失败: ") + esp_err_to_name(err));
+        NotifyError(std::string("Beaver 请求失败: ") + esp_err_to_name(err));
         return false;
     }
     return true;
@@ -1414,7 +1414,7 @@ bool EspClawService::CancelActiveRequest() {
         }
         return false;
     }
-    ESP_LOGI(TAG, "Active ESP-Claw request cancellation armed");
+    ESP_LOGI(TAG, "Active Beaver request cancellation armed");
     return true;
 #endif
 }
@@ -1436,7 +1436,7 @@ void EspClawService::ResponseTask() {
         if (err != ESP_OK) {
             if (running_.load()) {
                 request_inflight_.store(false);
-                NotifyError(std::string("ESP-Claw 响应失败: ") +
+                NotifyError(std::string("Beaver 响应失败: ") +
                             esp_err_to_name(err));
             }
             continue;
@@ -1453,7 +1453,7 @@ void EspClawService::ResponseTask() {
         } else {
             NotifyError(response.error_message != nullptr
                             ? response.error_message
-                            : "ESP-Claw 返回未知错误");
+                            : "Beaver 返回未知错误");
         }
         claw_core_response_free(&response);
         ApplyPendingConversationReset();

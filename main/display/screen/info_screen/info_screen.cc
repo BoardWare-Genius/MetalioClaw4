@@ -70,7 +70,7 @@ void CollectInfoItems(InfoItem* items, int* count) {
     int idx = 0;
 
     items[idx].label = I18n::T("设备型号");
-    std::snprintf(items[idx].value, sizeof(items[idx].value), "%s", "MetalioClaw4");
+    std::snprintf(items[idx].value, sizeof(items[idx].value), "%s", "Beaverbeaver");
     ++idx;
 
     items[idx].label = I18n::T("芯片型号");

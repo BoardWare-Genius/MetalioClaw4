@@ -10,7 +10,7 @@ namespace {
 constexpr const char* kChatCodingSkill = R"skill(---
 {
   "name": "metalio_chat_coding",
-  "description": "Create, run, stop, or modify touch games, animations, and interactive Lua screens on Metalio Claw 4.",
+  "description": "Create, run, stop, or modify touch games, animations, and interactive Lua screens on Beaverbeaver.",
   "metadata": {
     "cap_groups": ["cap_files", "cap_lua"],
     "manage_mode": "readonly"
@@ -126,7 +126,7 @@ and non-redundant. Ordinary remembered facts belong in the `memory_ops` skill.
 constexpr const char* kSkillCreatorSkill = R"skill(---
 {
   "name": "skill_creator",
-  "description": "Create or update a reusable ESP-Claw skill when the user asks to teach the device a repeatable workflow.",
+  "description": "Create or update a reusable Beaver skill when the user asks to teach the device a repeatable workflow.",
   "metadata": {
     "cap_groups": ["cap_files", "cap_skill"],
     "manage_mode": "readonly"

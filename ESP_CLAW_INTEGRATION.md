@@ -1,8 +1,9 @@
-# ESP-Claw 单固件集成
+# Beaver 单固件集成（基于 ESP-Claw）
 
-本工程将 Espressif 官方 `esp-claw` 固定为 Git 子模块，并接入它的
+Beaver 是设备上显示和对话使用的 Agent 名称。底层将 Espressif 官方
+`esp-claw` 固定为 Git 子模块，并接入它的
 `claw_core`、持久会话/长期记忆、Skill Manager、文件能力和 Lua 运行时。
-MetalioClaw 继续管理屏幕、麦克风、相机、网络和后台录制服务，因此切换
+Beaverbeaver 继续管理屏幕、麦克风、相机、网络和后台录制服务，因此切换
 Agent 不会重启设备，也不会停止持续录音/拍照。
 
 ## 获取与构建
@@ -25,7 +26,7 @@ ESP-Claw 固定在提交 `556e432d314c51de5285a4ae895ad3cdda5bade8`。
 
 ## 配置
 
-运行前需要配置 OpenAI-compatible API 的 `base_url`、`api_key` 和 `model`。
+运行 Beaver 前需要配置 OpenAI-compatible API 的 `base_url`、`api_key` 和 `model`。
 推荐在 SD 卡创建 `/system/esp_claw.json`，避免把密钥提交到代码仓库：
 
 ```json
@@ -40,10 +41,10 @@ ESP-Claw 固定在提交 `556e432d314c51de5285a4ae895ad3cdda5bade8`。
 插入 SD 卡后重新点击 `未配置` 按钮即可重新加载，不需要重启。请妥善保管
 这张 SD 卡，因为文件内含明文密钥。
 
-SD 卡可以一直插在设备中，切换 `数字人 / Claw` 模式不需要插拔。Agent 数据
+SD 卡可以一直插在设备中，切换 `数字人 / Beaver` 模式不需要插拔。Agent 数据
 统一保存在 `/sdcard/esp_claw/`：
 
-- `sessions/`：稳定的 Metalio Claw 会话历史以及已激活 Skill 状态；
+- `sessions/`：稳定的 Beaver 会话历史以及已激活 Skill 状态；
 - `memory/`：长期记忆和可编辑的角色/用户资料；
 - `skills/`：用户创建的 Skill；
 - `scripts/`：Chat Coding 生成的 Lua 程序；
@@ -56,7 +57,7 @@ Skills、写程序和运行游戏能力不会启用。
 
 ```text
 Xiaozhi Assistant
-  -> Enable in-process ESP-Claw agent mode
+  -> Enable in-process Beaver agent mode (powered by ESP-Claw)
 ```
 
 配置优先级为 NVS、SD 卡文件、编译期配置。也保留了仅限用户触发的
@@ -65,14 +66,14 @@ Xiaozhi Assistant
 
 ## 使用方式与边界
 
-- 顶部状态栏的 `数字人 / Claw` 按钮用于即时切换，不会重启。
+- 顶部状态栏的 `数字人 / Beaver` 按钮用于即时切换，不会重启。
 - 未配置时按钮显示 `未配置`，点击不会离开普通数字人模式。
-- ESP-Claw 模式复用现有 WebSocket 的麦克风和 ASR，将最终识别文本提交给
+- Beaver 模式复用现有 WebSocket 的麦克风和 ASR，将最终识别文本提交给
   `claw_core`；普通后端的 LLM/TTS 返回会被屏蔽，防止双重回答。
 - 已接入三个设备工具：查询设备/电量/网络/录制状态、统计 SD 卡待上传的
   WAV/JPEG 文件，以及按用户明确要求启动或停止后台录制。另提供明确触发的
   `reset_conversation`，用于清空会话历史和已激活 Skill，但保留长期记忆。
-- Claw 使用固定设备会话 `metalio-claw`，不会跟随语音 WebSocket 的临时
+- Beaver 使用固定内部设备会话 `metalio-claw`，不会跟随语音 WebSocket 的临时
   session id 变化，因此断网重连后仍能继续上一轮对话。
 - 已接入官方轻量记忆模式：每轮的用户消息、工具调用和最终回答持久化到 SD
   卡；用户明确说“记住”时可激活 `memory_ops` 写入长期记忆。为了控制 RAM 和
@@ -86,24 +87,24 @@ Xiaozhi Assistant
   支持矩形、圆、线条、文字和逐帧绘制。游戏退出后会恢复数字人界面。
 - 游戏运行时，`BackgroundCaptureService` 继续录音和拍照；游戏只接管显示层，
   不会接管或关闭后台采集模块。
-- ESP-Claw 最终回答会通过现有 WebSocket 发送
+- Beaver 最终回答会通过现有 WebSocket 发送
   `{"type":"tts_request","source":"esp_claw","text":"..."}`，复用数字人
   服务端已经配置的 TTS 音色和 Opus 流。固件只播放带 `source=esp_claw` 标记的
-  Claw 音频，仍会丢弃普通数字人 LLM 同时产生的回答，防止双重播报。
+  Beaver 音频，仍会丢弃普通数字人 LLM 同时产生的回答，防止双重播报。
   配套的 `voice-assistant-server` 必须包含 `tts_request` 协议扩展并在修改后重启。
 - `BackgroundCaptureService` 仍在启动阶段常驻，模式切换代码不会调用它的
   `Start()` 或 `Stop()`。
 
 ## 测试写游戏
 
-烧录后先切换到 Claw 并提交一次请求；记忆和 Skill 是首次启动 Claw 时按需
+烧录后先切换到 Beaver 并提交一次请求；记忆和 Skill 是首次启动 Beaver 时按需
 初始化的，不会出现在最前面的系统开机日志中。随后确认设备日志出现：
 
 ```text
 Agent memory, skills and Chat Coding ready at /sdcard/esp_claw
 ```
 
-切换到 `Claw` 后可以直接说：
+切换到 `Beaver` 后可以直接说：
 
 ```text
 帮我写一个可以触摸控制方向的贪吃蛇游戏，把 Lua 文件保存到 SD 卡并马上运行。
@@ -135,7 +136,7 @@ Agent memory, skills and Chat Coding ready at /sdcard/esp_claw
 `reset_conversation`；也可发送精确命令 `/session reset`，直接开始新会话。
 这两种操作都不会删除 `memory/` 下的长期记忆。
 
-ESP-Claw 也可以管理 SD 卡上的用户媒体。说“列出我的照片和录音”时会调用
+Beaver 也可以管理 SD 卡上的用户媒体。说“列出我的照片和录音”时会调用
 `list_media_files`；明确说“删除照片 XXX”或“删除所有手动录音”时会调用
 `delete_media_files`。“删除我所有的图片和录音”对应 `personal_media`，不会
 误删仍待上传的后台录制队列；“删除系统保护/后台录制目录里的图片和录音”对应
@@ -152,7 +153,7 @@ ESP-Claw 也可以管理 SD 卡上的用户媒体。说“列出我的照片和�
 
 执行期间中间状态栏每 5 秒显示简短的阶段和累计耗时，例如“分析 · 10s”
 “写代码”“检查1 · 25s”和“启动游戏”；其他过长状态会在按钮之间循环滚动。
-Claw 正在分析或调用工具时，点击数字人不会并发开启新一轮聆听；游戏启动后
+Beaver 正在分析或调用工具时，点击数字人不会并发开启新一轮聆听；游戏启动后
 触摸仍由 `metalio_ui` 正常接收。分析或执行期间双击数字人会调用官方核心的
 请求取消接口，状态先显示“正在取消”，HTTP/当前工具安全退出后回到“待命”；
 普通单击仍会被忽略，以免误触造成并发请求。
