@@ -6,6 +6,7 @@
 #include "boards/common/SdCardManager.hpp"
 #include "display/screen/camera_screen/camera_screen.h"
 #include "display/screen/digital_people_screen/digital_people_screen.h"
+#include "settings.h"
 #include "system_info.h"
 
 #include <algorithm>
@@ -34,6 +35,9 @@ constexpr uint32_t kSampleRate = 16000;
 constexpr uint16_t kChannels = 1;
 constexpr uint16_t kBitsPerSample = 16;
 constexpr const char* kPhotoDir = "/sdcard/bgphoto";
+constexpr const char* kSettingsNamespace = "bg_record";
+constexpr const char* kAudioEnabledKey = "audio";
+constexpr const char* kCameraEnabledKey = "camera";
 
 void SetU16(std::array<uint8_t, 44>& out, size_t offset, uint16_t value) {
     out[offset] = static_cast<uint8_t>(value & 0xff);
@@ -233,60 +237,108 @@ bool BuildMediaIdentity(const std::string& path, const char* content_type,
 
 }  // namespace
 
+BackgroundCaptureService::BackgroundCaptureService() {
+    Settings settings(kSettingsNamespace);
+    bool audio_enabled = settings.GetBool(kAudioEnabledKey, true);
+    bool camera_enabled = settings.GetBool(kCameraEnabledKey, true);
+    // A corrupt or manually edited NVS state must not make the record control
+    // start an apparently active session that captures nothing.
+    if (!audio_enabled && !camera_enabled) {
+        audio_enabled = true;
+        camera_enabled = true;
+    }
+    audio_enabled_.store(audio_enabled);
+    camera_enabled_.store(camera_enabled);
+}
+
 BackgroundCaptureService::~BackgroundCaptureService() { Stop(); }
 
-void BackgroundCaptureService::Start() {
+bool BackgroundCaptureService::SetSources(bool audio_enabled,
+                                          bool camera_enabled) {
+    if (!audio_enabled && !camera_enabled) {
+        return false;
+    }
+    audio_enabled_.store(audio_enabled);
+    camera_enabled_.store(camera_enabled);
+    Settings settings(kSettingsNamespace, true);
+    settings.SetBool(kAudioEnabledKey, audio_enabled);
+    settings.SetBool(kCameraEnabledKey, camera_enabled);
+    if (!running_.load()) {
+        DigitalPeopleScreen::SetBackgroundRecordingState(
+            false, false, audio_enabled, camera_enabled);
+    }
+    return true;
+}
+
+bool BackgroundCaptureService::Start() {
 #if CONFIG_BACKGROUND_RECORDING
-    if (running_.exchange(true)) {
-        return;
+    bool expected = false;
+    if (!running_.compare_exchange_strong(expected, true)) {
+        return true;
     }
 
+    const bool want_audio = audio_enabled_.load();
+    const bool want_camera = camera_enabled_.load();
+    if (!want_audio && !want_camera) {
+        running_.store(false);
+        return false;
+    }
     do {
         boot_id_ = esp_random();
     } while (boot_id_ == 0);
-    audio_ringbuf_ = xRingbufferCreateWithCaps(
-        kAudioRingBytes, RINGBUF_TYPE_NOSPLIT,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    ringbuf_with_caps_ = audio_ringbuf_ != nullptr;
-    if (audio_ringbuf_ == nullptr) {
-        audio_ringbuf_ = xRingbufferCreate(kAudioRingBytes,
-                                           RINGBUF_TYPE_NOSPLIT);
-    }
-    if (audio_ringbuf_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to allocate background audio ring buffer");
-        running_.store(false);
-        DigitalPeopleScreen::SetBackgroundRecordingState(false, false);
-        return;
-    }
 
-    Application::GetInstance().GetAudioService().SetAudioInputTapCallback(
-        [this](const std::vector<int16_t>& pcm, size_t requested_samples) {
-            HandleAudioInput(pcm, requested_samples);
-        });
-
-    if (xTaskCreatePinnedToCore(AudioWriterTaskEntry, "bg_audio_writer",
-                                8 * 1024, this, tskIDLE_PRIORITY + 2,
-                                &audio_writer_task_, 0) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create background audio writer task");
-        Application::GetInstance().GetAudioService().SetAudioInputTapCallback(nullptr);
-        running_.store(false);
-        if (ringbuf_with_caps_) {
-            vRingbufferDeleteWithCaps(audio_ringbuf_);
-        } else {
-            vRingbufferDelete(audio_ringbuf_);
+    if (want_audio) {
+        audio_ringbuf_ = xRingbufferCreateWithCaps(
+            kAudioRingBytes, RINGBUF_TYPE_NOSPLIT,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        ringbuf_with_caps_ = audio_ringbuf_ != nullptr;
+        if (audio_ringbuf_ == nullptr) {
+            audio_ringbuf_ = xRingbufferCreate(kAudioRingBytes,
+                                               RINGBUF_TYPE_NOSPLIT);
         }
-        audio_ringbuf_ = nullptr;
-        return;
+        if (audio_ringbuf_ == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate background audio ring buffer");
+        } else {
+            Application::GetInstance().GetAudioService().SetAudioInputTapCallback(
+                [this](const std::vector<int16_t>& pcm,
+                       size_t requested_samples) {
+                    HandleAudioInput(pcm, requested_samples);
+                });
+            if (xTaskCreatePinnedToCore(
+                    AudioWriterTaskEntry, "bg_audio_writer", 8 * 1024, this,
+                    tskIDLE_PRIORITY + 2, &audio_writer_task_, 0) == pdPASS) {
+                audio_active_.store(true);
+                Application::GetInstance().GetAudioService().EnableContinuousInput(true);
+            } else {
+                ESP_LOGE(TAG, "Failed to create background audio writer task");
+                Application::GetInstance().GetAudioService().SetAudioInputTapCallback(nullptr);
+                if (ringbuf_with_caps_) {
+                    vRingbufferDeleteWithCaps(audio_ringbuf_);
+                } else {
+                    vRingbufferDelete(audio_ringbuf_);
+                }
+                audio_ringbuf_ = nullptr;
+            }
+        }
     }
 
-    // Recording owns these always-on paths.  Starting from the UI, MCP, or at
-    // boot now has identical behavior, and Stop() can really enter low power.
-    Application::GetInstance().GetAudioService().EnableContinuousInput(true);
-    if (CameraScreen::StartBackgroundCapture() != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start camera for background recording");
+    if (want_camera) {
+        if (CameraScreen::StartBackgroundCapture() == ESP_OK) {
+            CameraScreen::EnableBackgroundRecording(
+                true, CONFIG_BACKGROUND_RECORDING_PHOTO_INTERVAL_MS, boot_id_);
+            camera_active_.store(true);
+        } else {
+            ESP_LOGE(TAG, "Failed to start camera for background recording");
+        }
     }
-    CameraScreen::EnableBackgroundRecording(
-        true, CONFIG_BACKGROUND_RECORDING_PHOTO_INTERVAL_MS, boot_id_);
+
+    if (!audio_active_.load() && !camera_active_.load()) {
+        running_.store(false);
+        DigitalPeopleScreen::SetBackgroundRecordingState(
+            false, false, want_audio, want_camera);
+        return false;
+    }
+
     if (CONFIG_BACKGROUND_RECORDING_UPLOAD_URL[0] != '\0' &&
         xTaskCreatePinnedToCore(MediaUploaderTaskEntry, "bg_media_upload",
                                 10 * 1024, this, tskIDLE_PRIORITY + 1,
@@ -295,11 +347,17 @@ void BackgroundCaptureService::Start() {
         ESP_LOGW(TAG, "Failed to create background media uploader task");
     }
     const bool sd_ready = SdCardManager::GetInstance().IsMounted();
-    DigitalPeopleScreen::SetBackgroundRecordingState(true, sd_ready);
+    DigitalPeopleScreen::SetBackgroundRecordingState(
+        true, sd_ready, audio_active_.load(), camera_active_.load());
     ESP_LOGI(TAG,
-             "Continuous SD recording started: photo_ms=%d audio_segment_ms=%d sd=%d",
+             "Continuous SD recording started: audio=%d camera=%d "
+             "photo_ms=%d audio_segment_ms=%d sd=%d",
+             audio_active_.load() ? 1 : 0, camera_active_.load() ? 1 : 0,
              CONFIG_BACKGROUND_RECORDING_PHOTO_INTERVAL_MS,
              CONFIG_BACKGROUND_RECORDING_AUDIO_SEGMENT_MS, sd_ready ? 1 : 0);
+    return true;
+#else
+    return false;
 #endif
 }
 
@@ -308,17 +366,22 @@ void BackgroundCaptureService::Stop() {
     if (!running_.exchange(false)) {
         return;
     }
-    Application::GetInstance().GetAudioService().SetAudioInputTapCallback(nullptr);
-    CameraScreen::EnableBackgroundRecording(false, 0, 0);
-    CameraScreen::StopBackgroundCapture();
-    Application::GetInstance().GetAudioService().EnableContinuousInput(false);
+    if (audio_active_.exchange(false)) {
+        Application::GetInstance().GetAudioService().SetAudioInputTapCallback(nullptr);
+        Application::GetInstance().GetAudioService().EnableContinuousInput(false);
+    }
+    if (camera_active_.exchange(false)) {
+        CameraScreen::EnableBackgroundRecording(false, 0, 0);
+        CameraScreen::StopBackgroundCapture();
+    }
     // Let the writer close and publish its last partial WAV before the uploader
     // drains this recording session.  The toggle runs on its own task, so this
     // orderly shutdown never blocks LVGL or the power-key monitor.
     while (audio_writer_task_ != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    DigitalPeopleScreen::SetBackgroundRecordingState(false, false);
+    DigitalPeopleScreen::SetBackgroundRecordingState(
+        false, false, audio_enabled_.load(), camera_enabled_.load());
     while (media_uploader_task_ != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -432,7 +495,8 @@ void BackgroundCaptureService::AudioWriterTask() {
     auto open_segment = [&]() -> bool {
         if (!SdCardManager::GetInstance().IsMounted() ||
             !EnsureDirectory(kAudioDir)) {
-            DigitalPeopleScreen::SetBackgroundRecordingState(true, false);
+            DigitalPeopleScreen::SetBackgroundRecordingState(
+                true, false, audio_active_.load(), camera_active_.load());
             return false;
         }
         char path[128];
@@ -455,7 +519,8 @@ void BackgroundCaptureService::AudioWriterTask() {
             return false;
         }
         segment_samples = 0;
-        DigitalPeopleScreen::SetBackgroundRecordingState(true, true);
+        DigitalPeopleScreen::SetBackgroundRecordingState(
+            true, true, audio_active_.load(), camera_active_.load());
         return true;
     };
 
@@ -469,7 +534,8 @@ void BackgroundCaptureService::AudioWriterTask() {
         }
         if (!SdCardManager::GetInstance().IsMounted()) {
             close_segment(false);
-            DigitalPeopleScreen::SetBackgroundRecordingState(true, false);
+            DigitalPeopleScreen::SetBackgroundRecordingState(
+                true, false, audio_active_.load(), camera_active_.load());
             vRingbufferReturnItem(audio_ringbuf_, item);
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;

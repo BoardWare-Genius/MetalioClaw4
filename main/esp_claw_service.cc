@@ -74,10 +74,14 @@ constexpr const char* kDeviceToolsJson = R"json([
     "type":"function",
     "function":{
       "name":"set_background_recording",
-      "description":"Start or stop continuous microphone and camera recording. Call this only when the user explicitly asks to change recording state.",
+      "description":"Start or stop background recording and optionally select camera, microphone, or both. Call this only when the user explicitly asks to change recording state. Omitted source fields keep the current selection.",
       "parameters":{
         "type":"object",
-        "properties":{"enabled":{"type":"boolean","description":"true to start recording; false to stop recording"}},
+        "properties":{
+          "enabled":{"type":"boolean","description":"true to start recording; false to stop recording"},
+          "audio_enabled":{"type":"boolean","description":"record microphone audio"},
+          "camera_enabled":{"type":"boolean","description":"record camera snapshots"}
+        },
         "required":["enabled"],
         "additionalProperties":false
       }
@@ -599,6 +603,10 @@ esp_err_t CallDeviceTool(const char* cap_name,
         }
         cJSON_AddBoolToObject(root, "background_recording",
                               app.IsBackgroundRecording());
+        cJSON_AddBoolToObject(root, "background_audio_enabled",
+                              app.IsBackgroundAudioEnabled());
+        cJSON_AddBoolToObject(root, "background_camera_enabled",
+                              app.IsBackgroundCameraEnabled());
         cJSON_AddStringToObject(root, "agent_mode",
                                 app.IsEspClawMode() ? "esp_claw"
                                                    : "digital_person");
@@ -691,6 +699,10 @@ esp_err_t CallDeviceTool(const char* cap_name,
     if (std::strcmp(cap_name, "set_background_recording") == 0) {
         cJSON* args = cJSON_Parse(input_json != nullptr ? input_json : "{}");
         cJSON* enabled = cJSON_GetObjectItemCaseSensitive(args, "enabled");
+        cJSON* audio_enabled =
+            cJSON_GetObjectItemCaseSensitive(args, "audio_enabled");
+        cJSON* camera_enabled =
+            cJSON_GetObjectItemCaseSensitive(args, "camera_enabled");
         if (!cJSON_IsBool(enabled)) {
             cJSON_Delete(args);
             cJSON* error = cJSON_CreateObject();
@@ -700,21 +712,60 @@ esp_err_t CallDeviceTool(const char* cap_name,
             SetJsonOutput(error, out_output);
             return ESP_ERR_INVALID_ARG;
         }
+        if ((audio_enabled != nullptr && !cJSON_IsBool(audio_enabled)) ||
+            (camera_enabled != nullptr && !cJSON_IsBool(camera_enabled))) {
+            cJSON_Delete(args);
+            cJSON* error = cJSON_CreateObject();
+            cJSON_AddBoolToObject(error, "ok", false);
+            cJSON_AddStringToObject(
+                error, "error",
+                "audio_enabled and camera_enabled must be booleans");
+            SetJsonOutput(error, out_output);
+            return ESP_ERR_INVALID_ARG;
+        }
         const bool requested = cJSON_IsTrue(enabled);
+        const bool requested_audio = audio_enabled != nullptr
+                                         ? cJSON_IsTrue(audio_enabled)
+                                         : app.IsBackgroundAudioEnabled();
+        const bool requested_camera = camera_enabled != nullptr
+                                          ? cJSON_IsTrue(camera_enabled)
+                                          : app.IsBackgroundCameraEnabled();
         cJSON_Delete(args);
 
-        if (app.IsBackgroundRecording() != requested) {
-            app.ToggleBackgroundRecording();
-            for (int i = 0; i < 100 &&
-                            app.IsBackgroundRecording() != requested; ++i) {
+        if (!requested_audio && !requested_camera) {
+            cJSON* error = cJSON_CreateObject();
+            cJSON_AddBoolToObject(error, "ok", false);
+            cJSON_AddStringToObject(error, "error",
+                                    "at least one recording source is required");
+            SetJsonOutput(error, out_output);
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        const bool needs_update =
+            app.IsBackgroundRecording() != requested ||
+            app.IsBackgroundAudioEnabled() != requested_audio ||
+            app.IsBackgroundCameraEnabled() != requested_camera;
+        bool accepted = true;
+        if (needs_update) {
+            accepted = app.SetBackgroundRecording(
+                requested, requested_audio, requested_camera);
+            for (int i = 0; accepted && i < 100 &&
+                            app.IsBackgroundRecordingTogglePending(); ++i) {
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
         }
         const bool actual = app.IsBackgroundRecording();
+        const bool actual_audio = app.IsBackgroundAudioEnabled();
+        const bool actual_camera = app.IsBackgroundCameraEnabled();
         cJSON* result = cJSON_CreateObject();
-        cJSON_AddBoolToObject(result, "ok", actual == requested);
+        cJSON_AddBoolToObject(
+            result, "ok",
+            accepted && actual == requested && actual_audio == requested_audio &&
+                actual_camera == requested_camera);
         cJSON_AddBoolToObject(result, "requested", requested);
         cJSON_AddBoolToObject(result, "background_recording", actual);
+        cJSON_AddBoolToObject(result, "audio_enabled", actual_audio);
+        cJSON_AddBoolToObject(result, "camera_enabled", actual_camera);
         return SetJsonOutput(result, out_output);
     }
 

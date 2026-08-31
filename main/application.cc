@@ -11,6 +11,7 @@
 #include "settings.h"
 
 #include <cstring>
+#include <new>
 #include <esp_log.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
@@ -422,33 +423,88 @@ void Application::CancelEspClawRequest() {
 
 void Application::ToggleBackgroundRecording() {
 #if CONFIG_BACKGROUND_RECORDING
+    SetBackgroundRecording(!background_capture_service_.IsRunning(),
+                           background_capture_service_.IsAudioEnabled(),
+                           background_capture_service_.IsCameraEnabled());
+#else
+    ESP_LOGW(TAG, "Background recording is disabled in project configuration");
+#endif
+}
+
+bool Application::SetBackgroundRecording(bool enabled, bool audio_enabled,
+                                         bool camera_enabled) {
+#if CONFIG_BACKGROUND_RECORDING
+    if (!audio_enabled && !camera_enabled) {
+        ESP_LOGW(TAG, "Background recording requires at least one source");
+        return false;
+    }
     bool expected = false;
     if (!background_capture_toggle_pending_.compare_exchange_strong(expected,
                                                                     true)) {
         ESP_LOGW(TAG, "Background recording toggle already in progress");
-        return;
+        return false;
+    }
+
+    struct Request {
+        Application* app;
+        bool enabled;
+        bool audio_enabled;
+        bool camera_enabled;
+    };
+    auto* request = new (std::nothrow) Request{
+        this, enabled, audio_enabled, camera_enabled};
+    if (request == nullptr) {
+        background_capture_toggle_pending_.store(false);
+        ESP_LOGE(TAG, "Failed to allocate background recording request");
+        return false;
     }
 
     const BaseType_t created = xTaskCreate(
         [](void* arg) {
-            auto* app = static_cast<Application*>(arg);
-            if (app->background_capture_service_.IsRunning()) {
-                ESP_LOGI(TAG, "User requested background recording stop");
+            auto* request = static_cast<Request*>(arg);
+            auto* app = request->app;
+            const bool mode_changed =
+                app->background_capture_service_.IsAudioEnabled() !=
+                    request->audio_enabled ||
+                app->background_capture_service_.IsCameraEnabled() !=
+                    request->camera_enabled;
+            if (app->background_capture_service_.IsRunning() &&
+                (!request->enabled || mode_changed)) {
+                ESP_LOGI(TAG, "Stopping background recording for request");
                 app->background_capture_service_.Stop();
-            } else {
-                ESP_LOGI(TAG, "User requested background recording start");
-                app->background_capture_service_.Start();
+            }
+            const bool configured = app->background_capture_service_.SetSources(
+                request->audio_enabled, request->camera_enabled);
+            bool applied = configured;
+            if (configured && request->enabled &&
+                !app->background_capture_service_.IsRunning()) {
+                ESP_LOGI(TAG,
+                         "Starting background recording: audio=%d camera=%d",
+                         request->audio_enabled ? 1 : 0,
+                         request->camera_enabled ? 1 : 0);
+                applied = app->background_capture_service_.Start();
+            }
+            if (!applied) {
+                ESP_LOGE(TAG, "Failed to apply background recording request");
             }
             app->background_capture_toggle_pending_.store(false);
+            delete request;
             vTaskDelete(nullptr);
         },
-        "bg_record_toggle", 4096, this, tskIDLE_PRIORITY + 2, nullptr);
+        "bg_record_toggle", 6144, request, tskIDLE_PRIORITY + 2, nullptr);
     if (created != pdPASS) {
+        delete request;
         background_capture_toggle_pending_.store(false);
         ESP_LOGE(TAG, "Failed to create background recording toggle task");
+        return false;
     }
+    return true;
 #else
+    (void)enabled;
+    (void)audio_enabled;
+    (void)camera_enabled;
     ESP_LOGW(TAG, "Background recording is disabled in project configuration");
+    return false;
 #endif
 }
 

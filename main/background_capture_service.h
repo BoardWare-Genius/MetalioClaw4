@@ -13,12 +13,15 @@
 
 class BackgroundCaptureService {
 public:
-    BackgroundCaptureService() = default;
+    BackgroundCaptureService();
     ~BackgroundCaptureService();
 
-    void Start();
+    bool Start();
     void Stop();
+    bool SetSources(bool audio_enabled, bool camera_enabled);
     bool IsRunning() const { return running_.load(); }
+    bool IsAudioEnabled() const { return audio_enabled_.load(); }
+    bool IsCameraEnabled() const { return camera_enabled_.load(); }
 
 private:
     static void AudioWriterTaskEntry(void* arg);
@@ -32,6 +35,10 @@ private:
                          int& status_code);
 
     std::atomic<bool> running_{false};
+    std::atomic<bool> audio_enabled_{true};
+    std::atomic<bool> camera_enabled_{true};
+    std::atomic<bool> audio_active_{false};
+    std::atomic<bool> camera_active_{false};
     std::atomic<uint32_t> audio_drops_{0};
     RingbufHandle_t audio_ringbuf_ = nullptr;
     TaskHandle_t audio_writer_task_ = nullptr;

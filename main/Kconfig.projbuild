@@ -37,15 +37,14 @@ config ALWAYS_ON_CAMERA
         background task. Frames are rendered only when a preview canvas exists.
 
 config BACKGROUND_RECORDING
-    bool "Continuously save background audio and photos to SD card"
+    bool "Save selectable background audio/photos to SD card"
     default y if DIGITAL_PEOPLE_ONLY
     default n
     depends on ALWAYS_ON_MICROPHONE && ALWAYS_ON_CAMERA
     help
-        Follow the reference background-capture behavior: continuously save
-        microphone audio as segmented WAV files and periodically save JPEG
-        camera snapshots. Completed files can be uploaded by the reliable SD
-        queue below.
+        Compile both background capture paths. At runtime the user can record
+        microphone audio, camera snapshots, or both (the default). Completed
+        files can be uploaded by the reliable SD queue below.
 
 if BACKGROUND_RECORDING
 

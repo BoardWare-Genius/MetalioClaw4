@@ -71,8 +71,11 @@ Xiaozhi Assistant
 - Beaver 模式复用现有 WebSocket 的麦克风和 ASR，将最终识别文本提交给
   `claw_core`；普通后端的 LLM/TTS 返回会被屏蔽，防止双重回答。
 - 已接入三个设备工具：查询设备/电量/网络/录制状态、统计 SD 卡待上传的
-  WAV/JPEG 文件，以及按用户明确要求启动或停止后台录制。另提供明确触发的
-  `reset_conversation`，用于清空会话历史和已激活 Skill，但保留长期记忆。
+  WAV/JPEG 文件，以及按用户明确要求启动或停止后台录制。后台录制默认同时
+  启用摄像头和麦克风，也可选择仅摄像头或仅录音；选择会持久化到 NVS。
+  停止状态点击顶部“记录”可打开来源选择框，Beaver 工具也接受
+  `audio_enabled` / `camera_enabled`。另提供明确触发的 `reset_conversation`，
+  用于清空会话历史和已激活 Skill，但保留长期记忆。
 - Beaver 使用固定内部设备会话 `metalio-claw`，不会跟随语音 WebSocket 的临时
   session id 变化，因此断网重连后仍能继续上一轮对话。
 - 已接入官方轻量记忆模式：每轮的用户消息、工具调用和最终回答持久化到 SD

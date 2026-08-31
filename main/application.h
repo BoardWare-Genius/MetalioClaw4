@@ -57,6 +57,8 @@ public:
     void ToggleChatState();
     void CancelEspClawRequest();
     void ToggleBackgroundRecording();
+    bool SetBackgroundRecording(bool enabled, bool audio_enabled,
+                                bool camera_enabled);
     void ToggleEspClawMode();
     bool SetEspClawMode(bool enabled);
     bool IsEspClawMode() const { return esp_claw_mode_.load(); }
@@ -72,6 +74,12 @@ public:
     }
     bool IsBackgroundRecording() const {
         return background_capture_service_.IsRunning();
+    }
+    bool IsBackgroundAudioEnabled() const {
+        return background_capture_service_.IsAudioEnabled();
+    }
+    bool IsBackgroundCameraEnabled() const {
+        return background_capture_service_.IsCameraEnabled();
     }
     bool IsBackgroundRecordingTogglePending() const {
         return background_capture_toggle_pending_.load();

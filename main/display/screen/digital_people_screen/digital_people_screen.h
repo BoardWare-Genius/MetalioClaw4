@@ -38,7 +38,9 @@ public:
     static void ShowSystemMessage(const char* text);
     static void ClearMessages();
     static void SetStatus(const char* status);
-    static void SetBackgroundRecordingState(bool active, bool sd_ready);
+    static void SetBackgroundRecordingState(bool active, bool sd_ready,
+                                            bool audio_enabled,
+                                            bool camera_enabled);
     static void SetEspClawMode(bool enabled, bool configured);
 
     // 切换数字人屏正在播放的表情动画 / 静态图。

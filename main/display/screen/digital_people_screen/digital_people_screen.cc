@@ -163,8 +163,18 @@ lv_timer_t* s_status_refresh_timer = nullptr;
 std::atomic_bool s_status_query_inflight{false};
 std::atomic_bool s_background_recording_active{false};
 std::atomic_bool s_background_recording_sd_ready{false};
+std::atomic_bool s_background_audio_enabled{true};
+std::atomic_bool s_background_camera_enabled{true};
 std::atomic_bool s_esp_claw_enabled{false};
 std::atomic_bool s_esp_claw_configured{false};
+
+struct RecordingModeDialogUi {
+    lv_obj_t* mask = nullptr;
+    lv_obj_t* audio_switch = nullptr;
+    lv_obj_t* camera_switch = nullptr;
+    lv_obj_t* error_label = nullptr;
+};
+RecordingModeDialogUi s_recording_mode_dlg;
 
 // 未激活拦截：全屏模态弹窗，不可关闭，仅能通过返回键离开。
 struct ActivationBlockedDialogUi {
@@ -194,9 +204,137 @@ void OnDigitalPersonDoubleClicked(lv_event_t* e) {
     Application::GetInstance().CancelEspClawRequest();
 }
 
+void CloseRecordingModeDialog() {
+    if (s_recording_mode_dlg.mask != nullptr) {
+        lv_obj_delete(s_recording_mode_dlg.mask);
+    }
+    s_recording_mode_dlg = RecordingModeDialogUi{};
+}
+
+void OpenRecordingModeDialog() {
+    if (s_ui.screen == nullptr || s_recording_mode_dlg.mask != nullptr) {
+        return;
+    }
+    auto& app = Application::GetInstance();
+
+    lv_obj_t* mask = lv_obj_create(s_ui.screen);
+    screen_strip_obj_chrome(mask);
+    lv_obj_add_flag(mask, LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_size(mask, kPanelSize, kPanelSize);
+    lv_obj_set_pos(mask, 0, 0);
+    lv_obj_set_style_bg_color(mask, lv_color_hex(0x000000), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(mask, LV_OPA_70, LV_PART_MAIN);
+    lv_obj_remove_flag(mask, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(mask, LV_OBJ_FLAG_CLICKABLE);
+    screen_swipe_back_ignore(mask, true);
+    s_recording_mode_dlg.mask = mask;
+
+    lv_obj_t* card = lv_obj_create(mask);
+    screen_strip_obj_chrome(card);
+    lv_obj_set_size(card, 500, 390);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(card, 24, LV_PART_MAIN);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = lv_label_create(card);
+    lv_label_set_text(title, "记录设置");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x111827), LV_PART_MAIN);
+    lv_obj_set_style_text_font(title, &font_puhui_30_4, LV_PART_MAIN);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 25);
+
+    auto create_source_row = [card](const char* text, int32_t y,
+                                    bool checked) -> lv_obj_t* {
+        lv_obj_t* label = lv_label_create(card);
+        lv_label_set_text(label, text);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x374151), LV_PART_MAIN);
+        lv_obj_set_style_text_font(label, &font_puhui_30_4, LV_PART_MAIN);
+        lv_obj_align(label, LV_ALIGN_TOP_LEFT, 50, y);
+
+        lv_obj_t* sw = lv_switch_create(card);
+        lv_obj_set_size(sw, 78, 42);
+        lv_obj_align(sw, LV_ALIGN_TOP_RIGHT, -50, y - 3);
+        if (checked) {
+            lv_obj_add_state(sw, LV_STATE_CHECKED);
+        }
+        screen_swipe_back_ignore(sw, true);
+        return sw;
+    };
+    s_recording_mode_dlg.camera_switch = create_source_row(
+        "摄像头", 105, app.IsBackgroundCameraEnabled());
+    s_recording_mode_dlg.audio_switch = create_source_row(
+        "录音", 175, app.IsBackgroundAudioEnabled());
+
+    lv_obj_t* error = lv_label_create(card);
+    lv_label_set_text(error, "至少选择一项");
+    lv_obj_set_style_text_color(error, lv_color_hex(0xDC2626), LV_PART_MAIN);
+    lv_obj_set_style_text_font(error, &font_puhui_20_4, LV_PART_MAIN);
+    lv_obj_align(error, LV_ALIGN_CENTER, 0, 78);
+    lv_obj_add_flag(error, LV_OBJ_FLAG_HIDDEN);
+    s_recording_mode_dlg.error_label = error;
+
+    auto create_action = [card](const char* text, int32_t x,
+                                uint32_t color) -> lv_obj_t* {
+        lv_obj_t* button = lv_button_create(card);
+        screen_strip_obj_chrome(button);
+        lv_obj_set_size(button, 180, 62);
+        lv_obj_align(button, LV_ALIGN_BOTTOM_MID, x, -25);
+        lv_obj_set_style_bg_color(button, lv_color_hex(color), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(button, 16, LV_PART_MAIN);
+        screen_swipe_back_ignore(button, true);
+        lv_obj_t* label = lv_label_create(button);
+        lv_label_set_text(label, text);
+        lv_obj_set_style_text_font(label, &font_puhui_30_4, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_obj_center(label);
+        screen_make_input_passive(label);
+        return button;
+    };
+    lv_obj_t* cancel = create_action("取消", -105, 0x6B7280);
+    lv_obj_add_event_cb(cancel,
+                        [](lv_event_t*) { CloseRecordingModeDialog(); },
+                        LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* start = create_action(
+        app.IsBackgroundRecording() ? "应用" : "开始", 105, 0x2563EB);
+    lv_obj_add_event_cb(
+        start,
+        [](lv_event_t*) {
+            const bool audio =
+                lv_obj_has_state(s_recording_mode_dlg.audio_switch,
+                                 LV_STATE_CHECKED);
+            const bool camera =
+                lv_obj_has_state(s_recording_mode_dlg.camera_switch,
+                                 LV_STATE_CHECKED);
+            if (!audio && !camera) {
+                lv_obj_remove_flag(s_recording_mode_dlg.error_label,
+                                   LV_OBJ_FLAG_HIDDEN);
+                return;
+            }
+            if (!Application::GetInstance().SetBackgroundRecording(
+                    true, audio, camera)) {
+                lv_label_set_text(s_recording_mode_dlg.error_label,
+                                  "正在切换，请稍候");
+                lv_obj_remove_flag(s_recording_mode_dlg.error_label,
+                                   LV_OBJ_FLAG_HIDDEN);
+                return;
+            }
+            CloseRecordingModeDialog();
+        },
+        LV_EVENT_CLICKED, nullptr);
+}
+
 void OnBackgroundRecordingClicked(lv_event_t* /*e*/) {
-    ESP_LOGI(TAG, "record button tapped: toggle background recording");
-    Application::GetInstance().ToggleBackgroundRecording();
+    auto& app = Application::GetInstance();
+    if (app.IsBackgroundRecording()) {
+        ESP_LOGI(TAG, "record button tapped: stop background recording");
+        app.SetBackgroundRecording(false, app.IsBackgroundAudioEnabled(),
+                                   app.IsBackgroundCameraEnabled());
+        return;
+    }
+    ESP_LOGI(TAG, "record button tapped: choose background recording sources");
+    OpenRecordingModeDialog();
 }
 
 void OnAgentModeClicked(lv_event_t* /*e*/) {
@@ -377,7 +515,10 @@ void ApplyBackgroundRecordingState() {
                                   LV_PART_MAIN);
         lv_obj_set_style_text_color(s_ui.record_label, lv_color_hex(0x4B5563),
                                     LV_PART_MAIN);
-        lv_label_set_text(s_ui.record_label, "记录");
+        const bool audio = s_background_audio_enabled.load();
+        const bool camera = s_background_camera_enabled.load();
+        lv_label_set_text(s_ui.record_label,
+                          audio && camera ? "记录" : (camera ? "摄像" : "录音"));
         return;
     }
 
@@ -388,7 +529,11 @@ void ApplyBackgroundRecordingState() {
                               LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_ui.record_dot, lv_color_hex(color), LV_PART_MAIN);
     lv_obj_set_style_text_color(s_ui.record_label, lv_color_hex(color), LV_PART_MAIN);
-    lv_label_set_text(s_ui.record_label, sd_ready ? "停止" : "无SD");
+    const bool audio = s_background_audio_enabled.load();
+    const bool camera = s_background_camera_enabled.load();
+    lv_label_set_text(s_ui.record_label,
+                      !sd_ready ? "无SD" :
+                      (audio && camera ? "停止" : (camera ? "摄像中" : "录音中")));
 }
 
 void ApplyBackgroundRecordingStateAsync(void* /*arg*/) {
@@ -755,6 +900,7 @@ void OnScreenUnloaded(lv_event_t* /*e*/) {
         s_status_refresh_timer = nullptr;
     }
     s_activation_dlg = ActivationBlockedDialogUi{};
+    s_recording_mode_dlg = RecordingModeDialogUi{};
     s_activation_blocked = false;
     s_ui.screen        = nullptr;
     s_ui.eaf           = nullptr;
@@ -906,9 +1052,13 @@ void DigitalPeopleScreen::SetStatus(const char* status) {
 }
 
 void DigitalPeopleScreen::SetBackgroundRecordingState(bool active,
-                                                       bool sd_ready) {
+                                                       bool sd_ready,
+                                                       bool audio_enabled,
+                                                       bool camera_enabled) {
     s_background_recording_active.store(active);
     s_background_recording_sd_ready.store(sd_ready);
+    s_background_audio_enabled.store(audio_enabled);
+    s_background_camera_enabled.store(camera_enabled);
     if (s_ui.record_button == nullptr || s_ui.record_dot == nullptr ||
         s_ui.record_label == nullptr) {
         return;

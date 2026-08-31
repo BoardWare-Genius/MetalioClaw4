@@ -127,14 +127,14 @@ void McpServer::AddCommonTools() {
 
 #if CONFIG_DIGITAL_PEOPLE_ONLY && CONFIG_BACKGROUND_RECORDING
     AddTool("self.background_recording.get_state",
-        "Get whether continuous microphone and camera recording is active.",
+        "Get whether the selected background recording sources are active.",
         PropertyList(),
         [](const PropertyList&) -> ReturnValue {
             return Application::GetInstance().IsBackgroundRecording();
         });
 
     AddTool("self.background_recording.set_enabled",
-        "Start or stop continuous microphone and camera recording and upload.",
+        "Start or stop the currently selected background recording sources and upload.",
         PropertyList({
             Property("enabled", kPropertyTypeBoolean)
         }),
@@ -142,9 +142,28 @@ void McpServer::AddCommonTools() {
             auto& app = Application::GetInstance();
             const bool enabled = properties["enabled"].value<bool>();
             if (app.IsBackgroundRecording() != enabled) {
-                app.ToggleBackgroundRecording();
+                app.SetBackgroundRecording(enabled,
+                                           app.IsBackgroundAudioEnabled(),
+                                           app.IsBackgroundCameraEnabled());
             }
             return enabled;
+        });
+
+    AddTool("self.background_recording.set_sources",
+        "Select microphone audio, camera snapshots, or both for background recording. At least one source must be enabled. An active recording is restarted with the new selection.",
+        PropertyList({
+            Property("audio_enabled", kPropertyTypeBoolean),
+            Property("camera_enabled", kPropertyTypeBoolean)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& app = Application::GetInstance();
+            const bool audio = properties["audio_enabled"].value<bool>();
+            const bool camera = properties["camera_enabled"].value<bool>();
+            if (!audio && !camera) {
+                return false;
+            }
+            return app.SetBackgroundRecording(app.IsBackgroundRecording(),
+                                              audio, camera);
         });
 #endif
 
