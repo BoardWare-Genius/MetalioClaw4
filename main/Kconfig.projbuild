@@ -60,7 +60,7 @@ config BACKGROUND_RECORDING_AUDIO_SEGMENT_MS
 
 config BACKGROUND_RECORDING_UPLOAD_URL
     string "Background media upload URL (empty disables upload)"
-    default "http://172.19.0.245:8788/api/v1/media/upload"
+    default "http://172.19.0.245:8789/api/v1/media/upload"
     help
         Beaver Memory reliable binary upload endpoint used for completed JPEG
         and WAV files. A file remains on SD until the server returns an
