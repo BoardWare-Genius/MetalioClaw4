@@ -74,6 +74,18 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     afe_config->aec_init = codec_->input_reference();
     afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
+    char* ns_model_name = esp_srmodel_filter(models_, ESP_NSNET_PREFIX, NULL);
+    afe_config->ns_init = true;
+    if (ns_model_name != nullptr) {
+        afe_config->ns_model_name = ns_model_name;
+        afe_config->afe_ns_mode = AFE_NS_MODE_NET;
+        ESP_LOGI(TAG, "Noise suppression: NSNet model=%s", ns_model_name);
+    } else {
+        // CONFIG_SR_NSN_WEBRTC does not add an NSNet model to models_.
+        afe_config->ns_model_name = nullptr;
+        afe_config->afe_ns_mode = AFE_NS_MODE_WEBRTC;
+        ESP_LOGI(TAG, "Noise suppression: WebRTC fallback");
+    }
     afe_config->afe_perferred_core = 1;
     afe_config->afe_perferred_priority = 1;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
@@ -129,12 +141,16 @@ void AfeWakeWord::AudioDetectionTask() {
         xEventGroupWaitBits(event_group_, DETECTION_RUNNING_EVENT, pdFALSE, pdTRUE, portMAX_DELAY);
 
         auto res = afe_iface_->fetch_with_delay(afe_data_, portMAX_DELAY);
+        if ((xEventGroupGetBits(event_group_) & DETECTION_RUNNING_EVENT) == 0) {
+            continue;
+        }
         if (res == nullptr || res->ret_value == ESP_FAIL) {
             continue;;
         }
 
+        const size_t samples = res->data_size / sizeof(int16_t);
         // Store the wake word data for voice recognition, like who is speaking
-        StoreWakeWordData(res->data, res->data_size / sizeof(int16_t));
+        StoreWakeWordData(res->data, samples);
 
         if (res->wakeup_state == WAKENET_DETECTED) {
             last_detected_wake_word_ = wake_words_[res->wakenet_model_index - 1];

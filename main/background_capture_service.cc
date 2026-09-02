@@ -215,7 +215,7 @@ bool BuildMediaIdentity(const std::string& path, const char* content_type,
     compact_mac.erase(std::remove(compact_mac.begin(), compact_mac.end(), ':'), compact_mac.end());
     identity.device_id = std::string(BOARD_NAME) + "-" + compact_mac;
     identity.boot_id = boot_id;
-    identity.stream_id = is_audio ? "microphone-main" : "camera-main";
+    identity.stream_id = is_audio ? "microphone-raw" : "camera-main";
     identity.sequence = parsed_sequence;
     identity.monotonic_ms = parsed_uptime;
     // The existing OTA path stores local wall time directly in the ESP Unix
@@ -299,7 +299,9 @@ bool BackgroundCaptureService::Start() {
         if (audio_ringbuf_ == nullptr) {
             ESP_LOGE(TAG, "Failed to allocate background audio ring buffer");
         } else {
-            Application::GetInstance().GetAudioService().SetAudioInputTapCallback(
+            auto& audio_service =
+                Application::GetInstance().GetAudioService();
+            audio_service.SetAudioInputTapCallback(
                 [this](const std::vector<int16_t>& pcm,
                        size_t requested_samples) {
                     HandleAudioInput(pcm, requested_samples);
@@ -308,10 +310,13 @@ bool BackgroundCaptureService::Start() {
                     AudioWriterTaskEntry, "bg_audio_writer", 8 * 1024, this,
                     tskIDLE_PRIORITY + 2, &audio_writer_task_, 0) == pdPASS) {
                 audio_active_.store(true);
-                Application::GetInstance().GetAudioService().EnableContinuousInput(true);
+                audio_service.EnableContinuousInput(true);
+                ESP_LOGI(TAG,
+                         "Background audio source: raw microphone PCM; "
+                         "server derives playback and ASR tracks");
             } else {
                 ESP_LOGE(TAG, "Failed to create background audio writer task");
-                Application::GetInstance().GetAudioService().SetAudioInputTapCallback(nullptr);
+                audio_service.SetAudioInputTapCallback(nullptr);
                 if (ringbuf_with_caps_) {
                     vRingbufferDeleteWithCaps(audio_ringbuf_);
                 } else {
@@ -367,8 +372,9 @@ void BackgroundCaptureService::Stop() {
         return;
     }
     if (audio_active_.exchange(false)) {
-        Application::GetInstance().GetAudioService().SetAudioInputTapCallback(nullptr);
-        Application::GetInstance().GetAudioService().EnableContinuousInput(false);
+        auto& audio_service = Application::GetInstance().GetAudioService();
+        audio_service.SetAudioInputTapCallback(nullptr);
+        audio_service.EnableContinuousInput(false);
     }
     if (camera_active_.exchange(false)) {
         CameraScreen::EnableBackgroundRecording(false, 0, 0);

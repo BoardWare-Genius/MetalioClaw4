@@ -33,20 +33,28 @@ list(APPEND EXTRA_COMPONENT_DIRS
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
 
-# Override esp-sr packed model with custom wakeword when present
+# Merge the custom wake word with supplemental ESP-SR models (for example
+# NSNet2).  A straight copy would discard every sdkconfig-selected model.
 if(EXISTS "${CMAKE_SOURCE_DIR}/wakeword/srmodels.bin")
     if(TARGET srmodels_bin)
         add_custom_target(custom_wakeword_srmodels ALL
+            COMMAND "${PYTHON}"
+                "${CMAKE_SOURCE_DIR}/scripts/merge_srmodels.py"
+                --primary "${CMAKE_SOURCE_DIR}/wakeword/srmodels.bin"
+                --supplemental "${CMAKE_BINARY_DIR}/srmodels/srmodels.bin"
+                --output "${CMAKE_BINARY_DIR}/srmodels/srmodels-merged.bin"
             COMMAND ${CMAKE_COMMAND} -E copy
-                "${CMAKE_SOURCE_DIR}/wakeword/srmodels.bin"
+                "${CMAKE_BINARY_DIR}/srmodels/srmodels-merged.bin"
                 "${CMAKE_BINARY_DIR}/srmodels/srmodels.bin"
-            COMMENT "Override srmodels.bin with custom wakeword"
+            BYPRODUCTS "${CMAKE_BINARY_DIR}/srmodels/srmodels-merged.bin"
+            COMMENT "Merge custom wakeword with configured ESP-SR models"
+            VERBATIM
         )
         add_dependencies(custom_wakeword_srmodels srmodels_bin)
         if(TARGET flash)
             add_dependencies(flash custom_wakeword_srmodels)
         endif()
-        message(STATUS "Custom wakeword enabled: wakeword/srmodels.bin -> build/srmodels/srmodels.bin")
+        message(STATUS "Custom wakeword enabled and merged with configured ESP-SR models")
     else()
         message(WARNING "wakeword/srmodels.bin exists but srmodels_bin target not found; custom wakeword override skipped")
     endif()

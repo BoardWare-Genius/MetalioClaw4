@@ -49,8 +49,14 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srm
         afe_config->ns_init = true;
         afe_config->ns_model_name = ns_model_name;
         afe_config->afe_ns_mode = AFE_NS_MODE_NET;
+        ESP_LOGI(TAG, "Noise suppression: NSNet model=%s", ns_model_name);
     } else {
-        afe_config->ns_init = false;
+        // CONFIG_SR_NSN_WEBRTC has no model entry.  Use the built-in WebRTC
+        // suppressor instead of silently disabling noise suppression.
+        afe_config->ns_init = true;
+        afe_config->ns_model_name = nullptr;
+        afe_config->afe_ns_mode = AFE_NS_MODE_WEBRTC;
+        ESP_LOGI(TAG, "Noise suppression: WebRTC fallback");
     }
 
     afe_config->agc_init = false;
