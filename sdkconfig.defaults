@@ -8,12 +8,12 @@ CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
 
 # CONFIG_PARTITION_TABLE_SINGLE_APP is not set
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions/v1/32m_digital_people.csv"
-CONFIG_PARTITION_TABLE_FILENAME="partitions/v1/32m_digital_people.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions/v1/32m.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions/v1/32m.csv"
 CONFIG_PARTITION_TABLE_OFFSET=0x9000
 
 CONFIG_BOARD_TYPE_METALIO_CLAW_4=y
-CONFIG_DIGITAL_PEOPLE_ONLY=y
+# CONFIG_DIGITAL_PEOPLE_ONLY is not set
 CONFIG_ALWAYS_ON_SENSOR_CAPTURE=y
 CONFIG_ALWAYS_ON_MICROPHONE=y
 CONFIG_ALWAYS_ON_CAMERA=y
@@ -25,6 +25,12 @@ CONFIG_BACKGROUND_RECORDING_UPLOAD_URL="http://172.19.0.245:8789/api/v1/media/up
 CONFIG_BACKGROUND_RECORDING_UPLOAD_TOKEN="dev-token"
 CONFIG_BACKGROUND_RECORDING_UPLOAD_TIMEOUT_MS=15000
 CONFIG_ESP_CLAW_AGENT=y
+
+# DSI submits a full 720x720 RGB888 framebuffer from PSRAM. Split cache
+# writeback into 64 KiB critical sections so camera/SD/network contention
+# cannot starve the FreeRTOS tick long enough to trip the interrupt watchdog.
+CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS=y
+CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x10000
 
 # esp-claw master currently calls an esp_http_client pooling API introduced
 # after IDF 5.5.4. Keep its optional pool disabled; claw_core still uses the

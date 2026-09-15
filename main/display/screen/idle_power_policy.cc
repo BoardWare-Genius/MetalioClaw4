@@ -1,12 +1,8 @@
 #include "idle_power_policy.h"
-#include "i18n.h"
-
-#include <cstdio>
 
 #include <esp_log.h>
 #include <lvgl.h>
 
-#include "home_screen/home_screen.h"
 #include "settings.h"
 #include "standby_screen/standby_screen.h"
 
@@ -14,7 +10,6 @@ namespace {
 
 constexpr const char* TAG = "IdlePower";
 
-constexpr int kDefaultShutdownMin = 5;
 constexpr int kDefaultStandbyMin = 1;
 constexpr int kMaxMinutes = 60;
 constexpr const char* kShutdownNvsKey = "idle_off_min";
@@ -29,7 +24,6 @@ struct State {
     uint32_t last_status_log_tick = 0;
     bool preserve_activity_on_detach = false;
     bool standby_triggered = false;
-    bool shutdown_triggered = false;
 };
 
 State s;
@@ -61,24 +55,6 @@ void OnIdleTick(lv_timer_t* /*timer*/) {
 
     const uint32_t idle_ms = lv_tick_elaps(s.last_activity_tick);
     const uint32_t standby_ms = MinutesToMs(IdlePower_GetStandbyMinutes());
-    const uint32_t shutdown_ms = MinutesToMs(IdlePower_GetShutdownMinutes());
-
-    // 关机优先：阈值更短或与待机相同时先关机。
-    if (shutdown_ms > 0 && idle_ms >= shutdown_ms) {
-        if (!s.shutdown_triggered) {
-            s.shutdown_triggered = true;
-            ESP_LOGW(TAG,
-                     "idle shutdown: idle=%u s, limit=%u s, session=%d",
-                     idle_ms / 1000, shutdown_ms / 1000,
-                     static_cast<int>(s.session));
-            char reason[72];
-            std::snprintf(reason, sizeof(reason),
-                          I18n::T("无操作 %u 分钟自动关机"),
-                          static_cast<unsigned>(shutdown_ms / (60U * 1000U)));
-            HomeScreen::RequestSystemShutdown(reason);
-        }
-        return;
-    }
 
     if (s.session == IdlePowerSession::Home && standby_ms > 0 &&
         idle_ms >= standby_ms) {
@@ -99,13 +75,9 @@ void OnIdleTick(lv_timer_t* /*timer*/) {
 
     uint32_t next_ms = 0;
     const char* next_action = "none";
-    if (s.session == IdlePowerSession::Home && standby_ms > 0 &&
-        (shutdown_ms == 0 || standby_ms < shutdown_ms)) {
+    if (s.session == IdlePowerSession::Home && standby_ms > 0) {
         next_ms = standby_ms;
         next_action = "standby";
-    } else if (shutdown_ms > 0) {
-        next_ms = shutdown_ms;
-        next_action = "shutdown";
     }
     if (next_ms > idle_ms) {
         ESP_LOGI(TAG, "idle=%u s, remaining=%u s until %s (session=%d)",
@@ -134,7 +106,6 @@ void IdlePower_NotifyActivity() {
     s.last_activity_tick = lv_tick_get();
     s.last_status_log_tick = lv_tick_get();
     s.standby_triggered = false;
-    s.shutdown_triggered = false;
 }
 
 void IdlePower_PrepareAutoStandby() {
@@ -162,7 +133,6 @@ void IdlePower_Attach(IdlePowerSession session, bool reset_activity) {
         } else {
             s.standby_triggered = false;
         }
-        s.shutdown_triggered = false;
         s.last_status_log_tick = lv_tick_get();
     }
 
@@ -192,7 +162,6 @@ void IdlePower_Stop() {
     s.preserve_activity_on_detach = false;
     s.session = IdlePowerSession::None;
     s.standby_triggered = false;
-    s.shutdown_triggered = false;
     StopTimer();
 }
 
@@ -210,14 +179,15 @@ void IdlePower_SetStandbyMinutes(int minutes) {
 }
 
 int IdlePower_GetShutdownMinutes() {
-    Settings settings("display", false);
-    return ClampMinutes(
-        settings.GetInt(kShutdownNvsKey, kDefaultShutdownMin));
+    return 0;
 }
 
 void IdlePower_SetShutdownMinutes(int minutes) {
-    minutes = ClampMinutes(minutes);
+    // Automatic shutdown is intentionally unavailable. Clear any value left
+    // by older firmware, but keep these compatibility APIs for existing code.
     Settings settings("display", true);
-    settings.SetInt(kShutdownNvsKey, minutes);
-    ESP_LOGI(TAG, "shutdown timeout updated to %d min", minutes);
+    settings.SetInt(kShutdownNvsKey, 0);
+    if (minutes > 0) {
+        ESP_LOGW(TAG, "automatic shutdown is disabled; ignoring %d min", minutes);
+    }
 }

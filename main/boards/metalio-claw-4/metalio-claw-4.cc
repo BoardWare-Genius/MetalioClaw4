@@ -317,8 +317,8 @@ private:
         dpi_config.pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB888;
 
         // 4. 帧缓冲数量
-        // LVGL adapter 跑 TEAR_AVOID_MODE_TRIPLE_FULL，需要 3 张 panel FB
-        // 当 LVGL 的 draw buffer，避免回退到 partial 模式抢内部 SRAM。
+        // LVGL adapter 跑 TEAR_AVOID_MODE_TRIPLE_PARTIAL，仍需要 3 张 panel FB
+        // 组成显示流水线；LVGL 的 40 行 partial draw buffer 单独放在内部 SRAM。
         dpi_config.num_fbs = 3;
 
         // 5. 视频时序参数 (TRULY HE396-040T2BZZ + NV3051F, 20250708 datasheet)
@@ -396,7 +396,7 @@ private:
         dpi_config.pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB888;
 
         // 4. 帧缓冲数量
-        // LVGL adapter 跑 TEAR_AVOID_MODE_TRIPLE_FULL，需要 3 张 panel FB。
+        // LVGL adapter 跑 TEAR_AVOID_MODE_TRIPLE_PARTIAL，需要 3 张 panel FB。
         // 厂商 example 用 2 张，但本工程的 LVGL 通路必须 3 张，否则会回退到
         // partial 模式抢内部 SRAM，导致初始化失败。
         dpi_config.num_fbs = 3;

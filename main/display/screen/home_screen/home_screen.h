@@ -10,6 +10,10 @@ public:
     // object (parent = NULL).
     static lv_obj_t* Create();
     static void RefreshStatusBar();
+    // Ambient OS 首页状态桥：LVAdapterDisplay 在持有 LVGL 锁时调用。
+    static bool IsActive();
+    static void SetAmbientStatus(const char* status);
+    static void AddAmbientEvent(const char* role, const char* content);
     // 下次进入主屏时从第一页开始（用于主题切换等场景）。
     static void ResetToFirstPage();
 
@@ -18,7 +22,7 @@ public:
     // 软件关机（UI / 空闲策略共用）。
     static void RequestSystemShutdown(const char* reason);
 
-    // 无操作进入待机 / 累计关机时长（分钟），0 表示关闭。已迁移到 idle_power_policy。
+    // 无操作进入待机时长；自动关机兼容接口固定为禁用。
     static int GetIdleShutdownMinutes();
     static void SetIdleShutdownMinutes(int minutes);
     static int GetIdleStandbyMinutes();

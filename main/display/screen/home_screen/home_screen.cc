@@ -5,7 +5,12 @@
 #include <cstdio>
 #include <cctype>
 #include <ctime>
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <deque>
 #include <string>
+#include <utility>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -891,7 +896,7 @@ struct HomeTouchSession {
 HomeTouchSession s_home_touch;
 
 // ---------------------------------------------------------------------------
-// 主屏无操作计时：由 idle_power_policy 统一管理（进入待机 + 累计关机）。
+// 主屏无操作计时：由 idle_power_policy 统一管理（仅进入待机，不自动关机）。
 // ---------------------------------------------------------------------------
 void BeginSystemShutdown(const char* reason);
 
@@ -2356,87 +2361,695 @@ void CreateIndicator(lv_obj_t* screen, PagerState* state) {
     HighlightDot(state, 0);
 }
 
+// ---------------------------------------------------------------------------
+// Ambient OS home
+//
+// The launcher is still available behind TOOLS, but the default surface is
+// now context-first: LIVE shows the current device state, MEMORY holds the
+// recent conversational event stream, and ASK turns the core into a large
+// push target.  No synthetic memories are shown; the timeline is populated by
+// actual Display::SetChatMessage calls routed through LVAdapterDisplay.
+// ---------------------------------------------------------------------------
+
+enum class AmbientPage : uint8_t { Live = 0, Memory = 1, Ask = 2 };
+
+struct AmbientEvent {
+    std::string time;
+    std::string role;
+    std::string text;
+};
+
+struct AmbientUiState {
+    lv_obj_t* screen = nullptr;
+    lv_obj_t* pages[3] = {nullptr, nullptr, nullptr};
+    lv_obj_t* nav_buttons[3] = {nullptr, nullptr, nullptr};
+    lv_obj_t* nav_labels[3] = {nullptr, nullptr, nullptr};
+    lv_obj_t* nav_markers[3] = {nullptr, nullptr, nullptr};
+    lv_obj_t* pulse = nullptr;
+    lv_obj_t* core = nullptr;
+    lv_obj_t* state_label = nullptr;
+    lv_obj_t* sensor_label = nullptr;
+    lv_obj_t* context_label = nullptr;
+    lv_obj_t* context_meta = nullptr;
+    lv_obj_t* memory_list = nullptr;
+    lv_obj_t* ask_prompt = nullptr;
+    lv_obj_t* tools_overlay = nullptr;
+    lv_timer_t* state_timer = nullptr;
+    AmbientPage page = AmbientPage::Live;
+    DeviceState last_device_state = kDeviceStateUnknown;
+    bool active = false;
+};
+
+AmbientUiState s_ambient_ui;
+std::deque<AmbientEvent> s_ambient_events;
+std::string s_ambient_status = "Ready";
+
+constexpr uint32_t kAmbientBgTop = 0x07100F;
+constexpr uint32_t kAmbientBgBottom = 0x05070B;
+constexpr uint32_t kAmbientPanel = 0x101817;
+constexpr uint32_t kAmbientPanelAlt = 0x0C1214;
+constexpr uint32_t kAmbientLine = 0x243330;
+constexpr uint32_t kAmbientText = 0xF2F7F5;
+constexpr uint32_t kAmbientMuted = 0x8FA29D;
+constexpr uint32_t kAmbientAccent = 0x45E6AD;
+constexpr uint32_t kAmbientAccentDim = 0x173D32;
+constexpr int kAmbientTop = kStatusBarHeight;
+constexpr int kAmbientNavH = 86;
+constexpr int kAmbientPageH = kPanelSize - kAmbientTop - kAmbientNavH;
+
+lv_obj_t* AmbientLabel(lv_obj_t* parent, const char* text,
+                       const lv_font_t* font, uint32_t color) {
+    lv_obj_t* label = lv_label_create(parent);
+    lv_label_set_text(label, text != nullptr ? text : "");
+    lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
+    lv_obj_set_style_text_color(label, lv_color_hex(color), LV_PART_MAIN);
+    lv_obj_remove_flag(label, LV_OBJ_FLAG_CLICKABLE);
+    return label;
+}
+
+void StyleAmbientButton(lv_obj_t* button, uint32_t bg = kAmbientPanel) {
+    screen_strip_obj_chrome(button);
+    lv_obj_set_style_bg_color(button, lv_color_hex(bg), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(button, 22, LV_PART_MAIN);
+    lv_obj_set_style_border_width(button, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(button, lv_color_hex(kAmbientLine), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(button, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_transform_scale(
+        button, 248,
+        static_cast<lv_style_selector_t>(LV_PART_MAIN) |
+            static_cast<lv_style_selector_t>(LV_STATE_PRESSED));
+    lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(button, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+void SetAmbientPage(AmbientPage page);
+
+void RefreshAmbientContext() {
+    if (s_ambient_ui.context_label == nullptr || s_ambient_ui.context_meta == nullptr) {
+        return;
+    }
+    if (!s_ambient_events.empty()) {
+        const AmbientEvent& event = s_ambient_events.front();
+        lv_label_set_text(s_ambient_ui.context_label, event.text.c_str());
+        std::string meta = event.time + "  ·  " +
+                           (event.role == "user" ? "HEARD" : "UNDERSTOOD");
+        lv_label_set_text(s_ambient_ui.context_meta, meta.c_str());
+    } else {
+        lv_label_set_text(s_ambient_ui.context_label,
+                          "Nothing important yet.\nTap the core when you need me.");
+        lv_label_set_text(s_ambient_ui.context_meta, "CONTEXT IS BUILDING");
+    }
+}
+
+void RefreshAmbientMemory() {
+    if (s_ambient_ui.memory_list == nullptr) {
+        return;
+    }
+    lv_obj_clean(s_ambient_ui.memory_list);
+    if (s_ambient_events.empty()) {
+        lv_obj_t* empty = AmbientLabel(s_ambient_ui.memory_list,
+                                       "No memories in this session yet.\n\n"
+                                       "Conversations will appear here as a quiet event stream.",
+                                       &font_puhui_30_4, kAmbientMuted);
+        lv_obj_set_width(empty, 600);
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 120);
+        return;
+    }
+
+    int y = 0;
+    for (const auto& event : s_ambient_events) {
+        lv_obj_t* row = lv_obj_create(s_ambient_ui.memory_list);
+        screen_strip_obj_chrome(row);
+        lv_obj_set_size(row, 630, 94);
+        lv_obj_set_pos(row, 0, y);
+        lv_obj_set_style_bg_color(row, lv_color_hex(kAmbientPanel), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(row, 18, LV_PART_MAIN);
+        lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(row, lv_color_hex(kAmbientLine), LV_PART_MAIN);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* dot = lv_obj_create(row);
+        screen_strip_obj_chrome(dot);
+        lv_obj_set_size(dot, 10, 10);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(kAmbientAccent), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_pos(dot, 20, 24);
+
+        std::string heading = event.time + "   " +
+                              (event.role == "user" ? "HEARD" : "REMEMBERED");
+        lv_obj_t* meta = AmbientLabel(row, heading.c_str(), &font_puhui_20_4,
+                                      kAmbientAccent);
+        lv_obj_set_pos(meta, 48, 13);
+
+        lv_obj_t* body = AmbientLabel(row, event.text.c_str(), &font_puhui_20_4,
+                                      kAmbientText);
+        lv_obj_set_width(body, 555);
+        lv_label_set_long_mode(body, LV_LABEL_LONG_DOT);
+        lv_obj_set_pos(body, 48, 49);
+        y += 106;
+    }
+}
+
+void PulseAnimExec(void* var, int32_t value) {
+    lv_obj_t* pulse = static_cast<lv_obj_t*>(var);
+    if (pulse == nullptr) {
+        return;
+    }
+    lv_obj_set_style_transform_scale(pulse, value, LV_PART_MAIN);
+    const int32_t fade = 190 - (value - 256) * 2;
+    lv_obj_set_style_border_opa(
+        pulse, static_cast<lv_opa_t>(fade < 24 ? 24 : fade), LV_PART_MAIN);
+}
+
+void StartAmbientPulse(lv_obj_t* pulse) {
+    lv_anim_t anim;
+    lv_anim_init(&anim);
+    lv_anim_set_var(&anim, pulse);
+    lv_anim_set_values(&anim, 256, 330);
+    lv_anim_set_duration(&anim, 1800);
+    lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&anim, PulseAnimExec);
+    lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&anim);
+}
+
+void RefreshAmbientState() {
+    if (s_ambient_ui.state_label == nullptr || s_ambient_ui.sensor_label == nullptr) {
+        return;
+    }
+    auto& app = Application::GetInstance();
+    const DeviceState state = app.GetDeviceState();
+    const char* title = "AWARE";
+    const char* sensors = app.IsBackgroundRecording()
+                              ? "Seeing  ·  Hearing  ·  Context building"
+                              : "Camera ready  ·  Microphone ready  ·  Location ready";
+    uint32_t color = kAmbientAccent;
+    switch (state) {
+        case kDeviceStateConnecting:
+            title = "UNDERSTANDING";
+            sensors = "Connecting context to the agent...";
+            color = 0xF6C85F;
+            break;
+        case kDeviceStateListening:
+            title = "LISTENING";
+            sensors = "Conversation detected  ·  Speak naturally";
+            color = 0x61E8FF;
+            break;
+        case kDeviceStateSpeaking:
+            title = "RESPONDING";
+            sensors = "Turning context into an answer";
+            color = 0xA78BFA;
+            break;
+        case kDeviceStateWifiConfiguring:
+            title = "OFFLINE";
+            sensors = "Connect a network to continue";
+            color = 0xF6C85F;
+            break;
+        case kDeviceStateFatalError:
+            title = "NEEDS ATTENTION";
+            sensors = "Open tools to inspect the device";
+            color = 0xFB7185;
+            break;
+        default:
+            break;
+    }
+    lv_label_set_text(s_ambient_ui.state_label, title);
+    lv_obj_set_style_text_color(s_ambient_ui.state_label, lv_color_hex(color),
+                                LV_PART_MAIN);
+    lv_label_set_text(s_ambient_ui.sensor_label, sensors);
+    if (s_ambient_ui.core != nullptr) {
+        lv_obj_set_style_bg_color(s_ambient_ui.core, lv_color_hex(color), LV_PART_MAIN);
+    }
+    if (s_ambient_ui.pulse != nullptr) {
+        lv_obj_set_style_border_color(s_ambient_ui.pulse, lv_color_hex(color),
+                                      LV_PART_MAIN);
+    }
+    s_ambient_ui.last_device_state = state;
+}
+
+void OnAmbientStateTimer(lv_timer_t* /*timer*/) {
+    RefreshAmbientState();
+}
+
+void OnAmbientCoreClicked(lv_event_t* /*event*/) {
+    ResetHomeIdleTimer();
+    Application::GetInstance().ToggleChatState();
+}
+
+void OnAmbientContextClicked(lv_event_t* /*event*/) {
+    SetAmbientPage(AmbientPage::Memory);
+}
+
+void OnAmbientNavClicked(lv_event_t* event) {
+    const intptr_t index = reinterpret_cast<intptr_t>(lv_event_get_user_data(event));
+    if (index >= 0 && index < 3) {
+        SetAmbientPage(static_cast<AmbientPage>(index));
+    }
+}
+
+void OnAmbientSuggestionClicked(lv_event_t* event) {
+    const char* prompt = static_cast<const char*>(lv_event_get_user_data(event));
+    if (s_ambient_ui.ask_prompt != nullptr && prompt != nullptr) {
+        std::string text = "Say:  \"";
+        text += prompt;
+        text += "\"";
+        lv_label_set_text(s_ambient_ui.ask_prompt, text.c_str());
+    }
+    ResetHomeIdleTimer();
+    Application::GetInstance().ToggleChatState();
+}
+
+void SetAmbientPage(AmbientPage page) {
+    const int active = static_cast<int>(page);
+    s_ambient_ui.page = page;
+    for (int i = 0; i < 3; ++i) {
+        if (s_ambient_ui.pages[i] != nullptr) {
+            if (i == active) {
+                lv_obj_remove_flag(s_ambient_ui.pages[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(s_ambient_ui.pages[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        if (s_ambient_ui.nav_labels[i] != nullptr) {
+            lv_obj_set_style_text_color(
+                s_ambient_ui.nav_labels[i],
+                lv_color_hex(i == active ? kAmbientText : kAmbientMuted), LV_PART_MAIN);
+        }
+        if (s_ambient_ui.nav_markers[i] != nullptr) {
+            lv_obj_set_style_bg_opa(s_ambient_ui.nav_markers[i],
+                                    i == active ? LV_OPA_COVER : LV_OPA_TRANSP,
+                                    LV_PART_MAIN);
+        }
+    }
+    if (page == AmbientPage::Memory) {
+        RefreshAmbientMemory();
+    }
+    ResetHomeIdleTimer();
+}
+
+void OnAmbientAppClicked(lv_event_t* event) {
+    auto* app = static_cast<AppEntry*>(lv_event_get_user_data(event));
+    if (app != nullptr && app->launch != nullptr) {
+        ResetHomeIdleTimer();
+        app->launch(app->lifecycle_cb);
+    }
+}
+
+void OnAmbientToolsClose(lv_event_t* /*event*/) {
+    if (s_ambient_ui.tools_overlay != nullptr) {
+        lv_obj_delete(s_ambient_ui.tools_overlay);
+        s_ambient_ui.tools_overlay = nullptr;
+    }
+}
+
+void OnAmbientToolsClicked(lv_event_t* /*event*/) {
+    if (s_ambient_ui.screen == nullptr || s_ambient_ui.tools_overlay != nullptr) {
+        return;
+    }
+    ResetHomeIdleTimer();
+    lv_obj_t* overlay = lv_obj_create(s_ambient_ui.screen);
+    s_ambient_ui.tools_overlay = overlay;
+    screen_strip_obj_chrome(overlay);
+    lv_obj_set_size(overlay, kPanelSize, kPanelSize - kStatusBarHeight);
+    lv_obj_align(overlay, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(overlay, lv_color_hex(kAmbientBgBottom), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_color(overlay, lv_color_hex(0x10231E), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_dir(overlay, LV_GRAD_DIR_VER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_move_foreground(overlay);
+
+    lv_obj_t* title = AmbientLabel(overlay, "TOOLS", &font_puhui_30_4, kAmbientText);
+    lv_obj_set_pos(title, 32, 22);
+    lv_obj_t* subtitle = AmbientLabel(overlay, "All device capabilities",
+                                      &font_puhui_20_4, kAmbientMuted);
+    lv_obj_set_pos(subtitle, 32, 58);
+
+    lv_obj_t* close = lv_button_create(overlay);
+    StyleAmbientButton(close, kAmbientPanel);
+    lv_obj_set_size(close, 72, 54);
+    lv_obj_align(close, LV_ALIGN_TOP_RIGHT, -24, 20);
+    lv_obj_add_event_cb(close, OnAmbientToolsClose, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* close_label = AmbientLabel(close, "×", &font_puhui_30_4, kAmbientText);
+    lv_obj_center(close_label);
+
+    lv_obj_t* list = lv_obj_create(overlay);
+    screen_strip_obj_chrome(list);
+    lv_obj_set_size(list, 680, 550);
+    lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_pad_hor(list, 25, LV_PART_MAIN);
+    lv_obj_set_style_pad_top(list, 12, LV_PART_MAIN);
+    lv_obj_set_style_pad_bottom(list, 28, LV_PART_MAIN);
+
+    constexpr int cols = 3;
+    constexpr int gap_x = 55;
+    constexpr int gap_y = 26;
+    for (int i = 0; i < kTotalApps; ++i) {
+        lv_obj_t* cell = CreateAppCell(list, kApps[i], i);
+        const int col = i % cols;
+        const int row = i / cols;
+        lv_obj_set_pos(cell, col * (kCellWidth + gap_x), row * (kCellHeight + gap_y));
+        lv_obj_add_event_cb(cell, OnAmbientAppClicked, LV_EVENT_CLICKED,
+                            const_cast<AppEntry*>(&kApps[i]));
+    }
+}
+
+lv_obj_t* CreateAmbientPage(lv_obj_t* screen) {
+    lv_obj_t* page = lv_obj_create(screen);
+    screen_strip_obj_chrome(page);
+    lv_obj_set_size(page, kPanelSize, kAmbientPageH);
+    lv_obj_set_pos(page, 0, kAmbientTop);
+    lv_obj_set_style_bg_opa(page, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+    return page;
+}
+
+void CreateAmbientLivePage(lv_obj_t* screen) {
+    lv_obj_t* page = CreateAmbientPage(screen);
+    s_ambient_ui.pages[0] = page;
+
+    lv_obj_t* live_dot = lv_obj_create(page);
+    screen_strip_obj_chrome(live_dot);
+    lv_obj_set_size(live_dot, 10, 10);
+    lv_obj_set_style_radius(live_dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(live_dot, lv_color_hex(kAmbientAccent), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(live_dot, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_pos(live_dot, 28, 24);
+    lv_obj_t* live = AmbientLabel(page, "LIVE", &font_puhui_20_4, kAmbientText);
+    lv_obj_set_pos(live, 48, 15);
+    lv_obj_t* privacy = AmbientLabel(page, "ON-DEVICE  ·  PRIVATE",
+                                     &font_puhui_20_4, kAmbientMuted);
+    lv_obj_align(privacy, LV_ALIGN_TOP_RIGHT, -28, 15);
+
+    lv_obj_t* pulse = lv_obj_create(page);
+    s_ambient_ui.pulse = pulse;
+    screen_strip_obj_chrome(pulse);
+    lv_obj_set_size(pulse, 150, 150);
+    lv_obj_set_style_radius(pulse, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(pulse, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(pulse, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(pulse, lv_color_hex(kAmbientAccent), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(pulse, LV_OPA_60, LV_PART_MAIN);
+    lv_obj_align(pulse, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_remove_flag(pulse, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* core_hit = lv_button_create(page);
+    screen_strip_obj_chrome(core_hit);
+    lv_obj_set_size(core_hit, 190, 190);
+    lv_obj_align(core_hit, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_bg_opa(core_hit, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_radius(core_hit, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_transform_scale(
+        core_hit, 246,
+        static_cast<lv_style_selector_t>(LV_PART_MAIN) |
+            static_cast<lv_style_selector_t>(LV_STATE_PRESSED));
+    lv_obj_add_event_cb(core_hit, OnAmbientCoreClicked, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t* core = lv_obj_create(core_hit);
+    s_ambient_ui.core = core;
+    screen_strip_obj_chrome(core);
+    lv_obj_set_size(core, 76, 76);
+    lv_obj_set_style_radius(core, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(core, lv_color_hex(kAmbientAccent), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(core, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(core, lv_color_hex(kAmbientAccent), LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(core, 32, LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(core, LV_OPA_30, LV_PART_MAIN);
+    lv_obj_center(core);
+    lv_obj_t* pupil = lv_obj_create(core);
+    screen_strip_obj_chrome(pupil);
+    lv_obj_set_size(pupil, 28, 28);
+    lv_obj_set_style_radius(pupil, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(pupil, lv_color_hex(kAmbientBgBottom), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(pupil, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_center(pupil);
+    screen_make_input_passive(core_hit);
+    lv_obj_add_flag(core_hit, LV_OBJ_FLAG_CLICKABLE);
+
+    s_ambient_ui.state_label = AmbientLabel(page, "AWARE", &font_puhui_30_4,
+                                            kAmbientAccent);
+    lv_obj_align(s_ambient_ui.state_label, LV_ALIGN_TOP_MID, 0, 242);
+    s_ambient_ui.sensor_label = AmbientLabel(
+        page, "Camera ready  ·  Microphone ready  ·  Location ready",
+        &font_puhui_20_4, kAmbientMuted);
+    lv_obj_align(s_ambient_ui.sensor_label, LV_ALIGN_TOP_MID, 0, 281);
+
+    lv_obj_t* card = lv_button_create(page);
+    StyleAmbientButton(card);
+    lv_obj_set_size(card, 664, 176);
+    lv_obj_align(card, LV_ALIGN_BOTTOM_MID, 0, -18);
+    lv_obj_add_event_cb(card, OnAmbientContextClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* card_title = AmbientLabel(card, "✦  CURRENT CONTEXT",
+                                        &font_puhui_20_4, kAmbientAccent);
+    lv_obj_set_pos(card_title, 22, 16);
+    s_ambient_ui.context_label = AmbientLabel(
+        card, "Nothing important yet.\nTap the core when you need me.",
+        &font_puhui_30_4, kAmbientText);
+    lv_obj_set_width(s_ambient_ui.context_label, 610);
+    lv_label_set_long_mode(s_ambient_ui.context_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(s_ambient_ui.context_label, 22, 52);
+    s_ambient_ui.context_meta = AmbientLabel(card, "CONTEXT IS BUILDING",
+                                             &font_puhui_20_4, kAmbientMuted);
+    lv_obj_align(s_ambient_ui.context_meta, LV_ALIGN_BOTTOM_LEFT, 22, -14);
+}
+
+void CreateAmbientMemoryPage(lv_obj_t* screen) {
+    lv_obj_t* page = CreateAmbientPage(screen);
+    s_ambient_ui.pages[1] = page;
+    lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t* title = AmbientLabel(page, "MEMORY", &font_puhui_30_4, kAmbientText);
+    lv_obj_set_pos(title, 28, 18);
+    lv_obj_t* subtitle = AmbientLabel(page, "A living stream of what mattered",
+                                      &font_puhui_20_4, kAmbientMuted);
+    lv_obj_set_pos(subtitle, 28, 56);
+    lv_obj_t* list = lv_obj_create(page);
+    s_ambient_ui.memory_list = list;
+    screen_strip_obj_chrome(list);
+    lv_obj_set_size(list, 664, kAmbientPageH - 100);
+    lv_obj_set_pos(list, 28, 92);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    RefreshAmbientMemory();
+}
+
+void CreateAmbientAskPage(lv_obj_t* screen) {
+    lv_obj_t* page = CreateAmbientPage(screen);
+    s_ambient_ui.pages[2] = page;
+    lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t* title = AmbientLabel(page, "ASK MEMORY", &font_puhui_30_4,
+                                   kAmbientText);
+    lv_obj_set_pos(title, 28, 18);
+    lv_obj_t* subtitle = AmbientLabel(page, "Ask your world, not a blank chatbot",
+                                      &font_puhui_20_4, kAmbientMuted);
+    lv_obj_set_pos(subtitle, 28, 56);
+
+    lv_obj_t* prompt_card = lv_obj_create(page);
+    screen_strip_obj_chrome(prompt_card);
+    lv_obj_set_size(prompt_card, 664, 112);
+    lv_obj_set_pos(prompt_card, 28, 98);
+    lv_obj_set_style_bg_color(prompt_card, lv_color_hex(kAmbientAccentDim), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(prompt_card, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(prompt_card, 22, LV_PART_MAIN);
+    lv_obj_set_style_border_width(prompt_card, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(prompt_card, lv_color_hex(kAmbientAccent), LV_PART_MAIN);
+    s_ambient_ui.ask_prompt = AmbientLabel(prompt_card,
+                                           "What do you remember about today?",
+                                           &font_puhui_30_4, kAmbientText);
+    lv_obj_set_width(s_ambient_ui.ask_prompt, 610);
+    lv_label_set_long_mode(s_ambient_ui.ask_prompt, LV_LABEL_LONG_WRAP);
+    lv_obj_center(s_ambient_ui.ask_prompt);
+
+    const char* prompts[] = {
+        "What happened today?",
+        "What did I promise?",
+        "What should I follow up?",
+    };
+    for (int i = 0; i < 3; ++i) {
+        lv_obj_t* chip = lv_button_create(page);
+        StyleAmbientButton(chip, kAmbientPanelAlt);
+        lv_obj_set_size(chip, 600, 58);
+        lv_obj_set_pos(chip, 60, 232 + i * 70);
+        lv_obj_add_event_cb(chip, OnAmbientSuggestionClicked, LV_EVENT_CLICKED,
+                            const_cast<char*>(prompts[i]));
+        lv_obj_t* label = AmbientLabel(chip, prompts[i], &font_puhui_20_4,
+                                       kAmbientText);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 20, 0);
+        lv_obj_t* arrow = AmbientLabel(chip, "›", &font_puhui_30_4, kAmbientAccent);
+        lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -18, -2);
+    }
+
+    lv_obj_t* ask = lv_button_create(page);
+    StyleAmbientButton(ask, kAmbientAccent);
+    lv_obj_set_size(ask, 300, 68);
+    lv_obj_align(ask, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_style_border_width(ask, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(ask, OnAmbientCoreClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* ask_label = AmbientLabel(ask, "TAP TO SPEAK", &font_puhui_20_4,
+                                       kAmbientBgBottom);
+    lv_obj_center(ask_label);
+}
+
+void CreateAmbientNav(lv_obj_t* screen) {
+    lv_obj_t* nav = lv_obj_create(screen);
+    screen_strip_obj_chrome(nav);
+    lv_obj_set_size(nav, kPanelSize, kAmbientNavH);
+    lv_obj_align(nav, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(nav, lv_color_hex(0x090D0F), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(nav, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(nav, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_side(nav, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
+    lv_obj_set_style_border_color(nav, lv_color_hex(kAmbientLine), LV_PART_MAIN);
+
+    const char* names[] = {"LIVE", "MEMORY", "ASK"};
+    constexpr int nav_w = 180;
+    for (int i = 0; i < 3; ++i) {
+        lv_obj_t* button = lv_button_create(nav);
+        s_ambient_ui.nav_buttons[i] = button;
+        screen_strip_obj_chrome(button);
+        lv_obj_set_size(button, nav_w, kAmbientNavH);
+        lv_obj_set_pos(button, i * nav_w, 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_add_event_cb(button, OnAmbientNavClicked, LV_EVENT_CLICKED,
+                            reinterpret_cast<void*>(static_cast<intptr_t>(i)));
+        lv_obj_t* label = AmbientLabel(button, names[i], &font_puhui_20_4,
+                                       i == 0 ? kAmbientText : kAmbientMuted);
+        s_ambient_ui.nav_labels[i] = label;
+        lv_obj_center(label);
+        lv_obj_t* marker = lv_obj_create(button);
+        s_ambient_ui.nav_markers[i] = marker;
+        screen_strip_obj_chrome(marker);
+        lv_obj_set_size(marker, 36, 3);
+        lv_obj_align(marker, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_set_style_radius(marker, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(marker, lv_color_hex(kAmbientAccent), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(marker, i == 0 ? LV_OPA_COVER : LV_OPA_TRANSP,
+                                LV_PART_MAIN);
+    }
+
+    lv_obj_t* tools = lv_button_create(nav);
+    screen_strip_obj_chrome(tools);
+    lv_obj_set_size(tools, kPanelSize - nav_w * 3, kAmbientNavH);
+    lv_obj_set_pos(tools, nav_w * 3, 0);
+    lv_obj_set_style_bg_color(tools, lv_color_hex(kAmbientPanel), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(tools, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_add_event_cb(tools, OnAmbientToolsClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* tools_label = AmbientLabel(tools, "TOOLS", &font_puhui_20_4,
+                                         kAmbientMuted);
+    lv_obj_center(tools_label);
+}
+
+void OnAmbientScreenLoaded(lv_event_t* /*event*/) {
+    s_ambient_ui.active = true;
+    PwrKey_OnScreenLifecycle("home", SCREEN_LIFECYCLE_LOAD);
+    StartHomeIdleTimer();
+    RefreshAmbientState();
+    RefreshAmbientContext();
+}
+
+void OnAmbientScreenUnloaded(lv_event_t* /*event*/) {
+    s_ambient_ui.active = false;
+    PwrKey_OnScreenLifecycle("home", SCREEN_LIFECYCLE_UNLOAD);
+}
+
+void OnAmbientScreenDeleted(lv_event_t* /*event*/) {
+    if (s_ambient_ui.state_timer != nullptr) {
+        lv_timer_delete(s_ambient_ui.state_timer);
+    }
+    if (s_ambient_ui.pulse != nullptr) {
+        lv_anim_delete(s_ambient_ui.pulse, nullptr);
+    }
+    StopHomeIdleTimer();
+    s_ambient_ui = AmbientUiState{};
+}
+
 }  // namespace
 
 void HomeScreen::ShowPowerOptionsDialog() { ShowPowerDialog(); }
 
 lv_obj_t* HomeScreen::Create() {
-    // 主题相关：根据 NVS 里的当前主题 id 把 kApps 的 icon_suffix 拼成完整
-    // 路径，写入 s_icon_paths 缓存。后续 CreateAppCell 直接索引这份缓存。
+    // Ambient OS 以世界状态为首页；完整 app launcher 保留在 TOOLS 抽屉。
     EnsureIconPathsBuilt();
 
     lv_obj_t* screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), LV_PART_MAIN);
+    s_ambient_ui = AmbientUiState{};
+    s_ambient_ui.screen = screen;
+    lv_obj_set_style_bg_color(screen, lv_color_hex(kAmbientBgTop), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_color(screen, lv_color_hex(kAmbientBgBottom), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_dir(screen, LV_GRAD_DIR_VER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_pad_all(screen, 0, LV_PART_MAIN);
     lv_obj_set_style_border_width(screen, 0, LV_PART_MAIN);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    // ----- Figure out how many pages we need -----
-    // kTotalApps 已经在 namespace 作用域里声明，直接复用。
-    int page_count = (kTotalApps + kAppsPerPage - 1) / kAppsPerPage;
-    if (page_count < 1)
-        page_count = 1;
-    if (page_count > kMaxPages)
-        page_count = kMaxPages;
-
-    // PagerState owns the dot pointers + current_page; freed on screen del.
-    auto* state = new PagerState{};
-    state->page_count = page_count;
-    state->current_page = 0;
-
     auto* status = new HomeStatusState{};
     CreateStatusBar(screen, status);
 
-    // ----- Pager（左右滑动翻页容器） -----
-    // 不开启 LVGL 原生 scrollable，避免与 screen 级触摸分发抢手势。
-    // 水平滑动时由 OnHomePressing 跟手拖动 pager；松手或快速 fling 时
-    // 通过 lv_obj_scroll_to_x(..., LV_ANIM_ON) 平滑吸附到目标页。
-    // 滑动期间隐藏 PNG 图标，改为轻量骨架块跟手移动，减轻卡顿。
-    lv_obj_t* pager = lv_obj_create(screen);
-    state->pager = pager;
-    lv_obj_remove_style_all(pager);
-    lv_obj_set_size(pager, kPanelSize, kPagerHeight);
-    lv_obj_align(pager, LV_ALIGN_TOP_LEFT, 0, kStatusBarHeight);
-    lv_obj_set_style_bg_opa(pager, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_remove_flag(pager, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scrollbar_mode(pager, LV_SCROLLBAR_MODE_OFF);
-    // Row flex；每页固定宽度并列排布，pager 的 scroll 偏移由我们手动控制。
-    lv_obj_set_flex_flow(pager, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(pager, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_event_cb(pager, OnPagerScrollBegin, LV_EVENT_SCROLL_BEGIN, nullptr);
-    lv_obj_add_event_cb(pager, OnPagerScrollEnd, LV_EVENT_SCROLL_END, state);
+    CreateAmbientLivePage(screen);
+    CreateAmbientMemoryPage(screen);
+    CreateAmbientAskPage(screen);
+    CreateAmbientNav(screen);
+    SetAmbientPage(AmbientPage::Live);
+    RefreshAmbientContext();
+    RefreshAmbientState();
+    StartAmbientPulse(s_ambient_ui.pulse);
+    s_ambient_ui.state_timer = lv_timer_create(OnAmbientStateTimer, 350, nullptr);
 
-    if (page_count > 1) {
-        // 首尾克隆页实现无限循环：末页克隆 | 真实页 | 首页克隆
-        CreatePage(pager, page_count - 1, kTotalApps);
-        for (int p = 0; p < page_count; ++p) {
-            CreatePage(pager, p, kTotalApps);
-        }
-        CreatePage(pager, 0, kTotalApps);
-    } else {
-        CreatePage(pager, 0, kTotalApps);
-    }
-
-    // ----- Page indicator -----
-    // Only worth drawing when there is more than one page; otherwise it's
-    // a lonely single dot which just adds noise.
-    if (page_count > 1) {
-        CreateIndicator(screen, state);
-    }
-
-    // ----- 触摸：screen 级 PRESSED / PRESSING / RELEASED 统一分类分发 -----
-    // LV_EVENT_SCREEN_LOADED 后再铺 EVENT_BUBBLE，让子树按压事件冒泡到 screen。
-    lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(screen, OnHomePressed, LV_EVENT_PRESSED, state);
-    lv_obj_add_event_cb(screen, OnHomePressing, LV_EVENT_PRESSING, state);
-    lv_obj_add_event_cb(screen, OnHomeReleased, LV_EVENT_RELEASED, state);
-    lv_obj_add_event_cb(screen, OnHomeScreenLoaded, LV_EVENT_SCREEN_LOADED, state);
-    lv_obj_add_event_cb(screen, OnHomeScreenUnloaded, LV_EVENT_SCREEN_UNLOADED,
+    lv_obj_add_event_cb(screen, OnAmbientScreenLoaded, LV_EVENT_SCREEN_LOADED, nullptr);
+    lv_obj_add_event_cb(screen, OnAmbientScreenUnloaded, LV_EVENT_SCREEN_UNLOADED,
                         nullptr);
-    lv_obj_add_event_cb(screen, OnScreenDeleted, LV_EVENT_DELETE, state);
+    lv_obj_add_event_cb(screen, OnAmbientScreenDeleted, LV_EVENT_DELETE, nullptr);
 
     return screen;
+}
+
+bool HomeScreen::IsActive() { return s_ambient_ui.active; }
+
+void HomeScreen::SetAmbientStatus(const char* status) {
+    if (status == nullptr || status[0] == '\0') {
+        return;
+    }
+    s_ambient_status = status;
+    if (s_ambient_ui.active && s_ambient_events.empty() &&
+        s_ambient_ui.context_label != nullptr) {
+        lv_label_set_text(s_ambient_ui.context_label, status);
+    }
+    RefreshAmbientState();
+}
+
+void HomeScreen::AddAmbientEvent(const char* role, const char* content) {
+    if (role == nullptr || content == nullptr || content[0] == '\0') {
+        return;
+    }
+    AmbientEvent event;
+    time_t now = time(nullptr);
+    struct tm local = {};
+    char time_buf[8] = "NOW";
+    if (localtime_r(&now, &local) != nullptr && local.tm_year >= 2025 - 1900) {
+        strftime(time_buf, sizeof(time_buf), "%H:%M", &local);
+    }
+    event.time = time_buf;
+    event.role = role;
+    event.text.assign(content, std::min<size_t>(std::strlen(content), 180));
+    s_ambient_events.push_front(std::move(event));
+    while (s_ambient_events.size() > 8) {
+        s_ambient_events.pop_back();
+    }
+    if (s_ambient_ui.active) {
+        RefreshAmbientContext();
+        if (s_ambient_ui.page == AmbientPage::Memory) {
+            RefreshAmbientMemory();
+        }
+    }
 }
 
 void OnRefreshStatusBarAsync(void* /*user_data*/) {

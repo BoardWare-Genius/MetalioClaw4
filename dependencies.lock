@@ -1,13 +1,11 @@
 dependencies:
   78/esp-ml307:
-    component_hash: d4de9738baaaa5e6655c686a6083e699f3605de54dc83233ff3328cf55a4f543
     dependencies:
     - name: idf
-      require: private
       version: '>=5.3'
     source:
-      registry_url: https://components.espressif.com/
-      type: service
+      path: /home/verachen/Workspace/MetalioClaw4/third_party/esp-ml307
+      type: local
     version: 3.5.3
   78/esp-opus:
     component_hash: 8182b733f071d7bfe1e837f4c9f8649a63e4c937177f089e65772880c02f2e17
@@ -1324,6 +1322,6 @@ direct_dependencies:
 - waveshare/esp_lcd_sh8601
 - waveshare/esp_lcd_st7703
 - waveshare/esp_lcd_touch_cst9217
-manifest_hash: 444ebe252a6178c1cc44ac479f602358eed942f042edca35e2dbcfe6f32bf208
+manifest_hash: c63c7a95dcf78013196d7f22dfec8500c5a5a1166ae3f414998985f7d72d919b
 target: esp32p4
 version: 2.0.0

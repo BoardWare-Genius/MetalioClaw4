@@ -95,21 +95,18 @@ LVAdapterDisplay::LVAdapterDisplay(const esp_lcd_panel_handle_t panel,
 
     ESP_ERROR_CHECK(esp_lv_adapter_init(&adapter_cfg));
 
-    // 性能调优要点（720x720 RGB565 屏）：
-    //   - enable_ppa_accel: 开启 PPA。半透明/圆角会触发 adapter「先 msync 再
-    //     软件 fallback」；主屏翻页期间由 home_screen 降级为纯不透明直角绘制
-    //     （见 SetPagerSkeletonMode），避免刷 invalid addr。
-    //   - tear_avoid_mode = TRIPLE_FULL：直接把 LCD 驱动里 num_fbs=3 的 3 张
-    //     panel 帧缓冲（PSRAM 上 3×720×720×2 ≈ 3MB）当成 LVGL 的 draw buffer
-    //     用，渲染→DMA 三级流水，无撕裂。
-    //     之前用 DEFAULT_MIPI_DSI（= TRIPLE_PARTIAL）会额外要一块
-    //     720×buffer_height×2 ≈ 280KB 的内部 SRAM partial buffer，而片上 SRAM
-    //     被 FreeRTOS / WiFi / SDIO 吃掉后根本剩不下，导致启动日志里报
-    //     「alloc partial draw buffer failed」+「tear mode 4 setup failed」，
-    //     adapter 还会再 fallback 申请 ~576KB PSRAM 当双缓冲，3MB+576KB 双重
-    //     浪费。TRIPLE_FULL 彻底避开这条 fallback 路径。
-    //   - buffer_height / require_double_buffer 在 TRIPLE_FULL 模式下不再生效
-    //     （buffer 直接用 panel FB），保留是为了将来切回 partial 模式方便。
+    // 性能调优要点（720x720 RGB888 屏）：
+    //   - enable_ppa_accel: 关闭 LVGL PPA 绘制加速。内部 partial 条带本身仍由
+    //     DMA2D 搬到 panel FB；关闭的只是圆角、粒子等对象的 PPA fill/blend。
+    //     否则低内存时 LVGL 的临时绘制层可能落入不可 cache-sync 的内部区域，
+    //     待机充电粒子动画会反复报 esp_cache_msync invalid addr。
+    //   - tear_avoid_mode = TRIPLE_PARTIAL：LCD 驱动仍提供 3 张 panel 帧缓冲
+    //     做无撕裂流水线，但 LVGL 只在一块内部 SRAM 条带上绘制脏区，再复制到
+    //     下一张 panel FB。这样首页动画不会以约 60 FPS 重写整张 PSRAM 帧，
+    //     可显著降低与 MIPI-CSI 摄像头并行工作时的外部内存带宽峰值。
+    //   - 40 行 RGB888 条带占 720×40×3 = 86400 bytes。此前 200 行条带需要
+    //     432000 bytes，容易因内部 SRAM 不足而回退；40 行在吞吐和可分配性之间
+    //     更稳妥。partial 模式只需要一个 draw buffer，面板的三缓冲另行管理。
     esp_lv_adapter_display_config_t disp_cfg = {
         .panel = panel,
         .panel_io = panel_io,
@@ -118,12 +115,12 @@ LVAdapterDisplay::LVAdapterDisplay(const esp_lcd_panel_handle_t panel,
                 .interface = ESP_LV_ADAPTER_PANEL_IF_MIPI_DSI,
                 .hor_res = static_cast<uint16_t>(width),
                 .ver_res = static_cast<uint16_t>(height),
-                .buffer_height = 200,
-                .use_psram = true,
-                .enable_ppa_accel = true,
-                .require_double_buffer = true,
+                .buffer_height = 40,
+                .use_psram = false,
+                .enable_ppa_accel = false,
+                .require_double_buffer = false,
             },
-        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_FULL,
+        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_TRIPLE_PARTIAL,
     };
 
     lv_display_t* disp = esp_lv_adapter_register_display(&disp_cfg);
@@ -225,9 +222,9 @@ void LVAdapterDisplay::SetChatMessage(const char* const role, const char* const 
     }
 
     // 路由策略：
-    //   1) 聊天屏在前台 -> 历史滚动气泡（双侧）。
-    //   2) 数字人屏在前台 -> user 走底部气泡，bot 走 gif 左上方气泡。
-    //   3) 其它屏 -> 直接丢弃，避免在后台无界堆积。
+    //   1) 对话事件同时进入 Ambient OS 的短事件流。
+    //   2) 聊天屏在前台 -> 历史滚动气泡（双侧）。
+    //   3) 数字人屏在前台 -> user 走底部气泡，bot 走 gif 左上方气泡。
     const bool dp_active   = DigitalPeopleScreen::IsActive();
 #if CONFIG_DIGITAL_PEOPLE_ONLY
     if (!dp_active) {
@@ -235,7 +232,8 @@ void LVAdapterDisplay::SetChatMessage(const char* const role, const char* const 
     }
 #else
     const bool chat_active = ChatScreen::IsActive();
-    if (!chat_active && !dp_active) {
+    const bool home_active = HomeScreen::IsActive();
+    if (!chat_active && !dp_active && !home_active) {
         return;
     }
 #endif
@@ -244,10 +242,11 @@ void LVAdapterDisplay::SetChatMessage(const char* const role, const char* const 
         return;
     }
 #if !CONFIG_DIGITAL_PEOPLE_ONLY
+    HomeScreen::AddAmbientEvent(role, content);
     if (chat_active) {
         ChatScreen::AddMessage(content,
                                is_user ? ChatMsgDir::Right : ChatMsgDir::Left);
-    } else {
+    } else if (!home_active) {
 #endif
         if (is_user) {
             DigitalPeopleScreen::ShowUserMessage(content);
@@ -265,6 +264,9 @@ void LVAdapterDisplay::SetStatus(const char* const status) {
         return;
     }
     DigitalPeopleScreen::SetStatus(status);
+#if !CONFIG_DIGITAL_PEOPLE_ONLY
+    HomeScreen::SetAmbientStatus(status);
+#endif
     esp_lv_adapter_unlock();
 }
 

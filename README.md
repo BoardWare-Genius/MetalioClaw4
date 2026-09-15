@@ -116,9 +116,9 @@ Metalio Claw4 replaces the ES8311 + ES7210 discrete solution with a **profes
 - **Wireless Charging**: NU1680 receiver chip (I2C 0x60), supports Qi wireless charging; charging current configurable via register [`NU1680 charging current control`](#nu1680-charging-current-control)  
 - **USB Charging Detection**: IO extender USB_INSERT_DET pin  
 - **Low‑Voltage Protection**: Device powers off automatically when booting at 0 % and not charging  
-- **Standby & shutdown (configurable)**: While on the **home screen**, idle policy is controlled by **Settings → Standby** (`idle_power_policy`):
+- **Standby (configurable)**: While on the **home screen**, idle policy is controlled by **Settings → Standby** (`idle_power_policy`):
   - **Enter standby**: Default ~**1 minute** idle → `standby_screen` (large clock; charging shows blue particle effect ~10 s)
-  - **Cumulative shutdown**: Default ~**5 minutes** idle (home + standby) → software power‑off; either slider set to **0** disables that action
+  - **Automatic shutdown is disabled**: Idle time can enter standby but never requests software power-off
   - Entering another app stops the idle timer; any touch resets it. Side‑key short‑press enters standby only when **home is in foreground**
 - **Power‑Management IC**: Hardware long‑press ≈ 1 s to power on, ≈ 5 s to force‑off; firmware can trigger a software power‑off via a pulse on the IO extender (see [Power‑IC & Power Key](#power-ic-and-power-key))
 
@@ -547,7 +547,7 @@ Home‑screen app list (`home_screen.cc` → `kApps[]`):
 #### Settings
 
 - **Language**: Runtime switch Simplified Chinese / English (`I18n::SetLocale`, NVS); home rebuilds after change  
-- **Standby**: Configure “enter standby” and “cumulative shutdown” (minutes; 0 = disable)  
+- **Standby**: Configure the idle delay before entering the clock screen; idle never powers the device off
 - **Bluetooth**: Former standalone Bluetooth Config lives here (modes 1/2/3, scan & pair, Reset Bluetooth)  
 - Volume and backlight are also here (no separate home **Backlight** icon)
 
