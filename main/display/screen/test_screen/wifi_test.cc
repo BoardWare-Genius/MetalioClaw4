@@ -94,103 +94,99 @@ void WifiEvtHandler(void* /*arg*/, esp_event_base_t base, int32_t id,
     }
 }
 
-bool WifiInitForTest() {
-    if (s_wifi_initialized) {
-        return true;
+// Release partially initialized stacks too, so a failed scan can be retried.
+bool CleanupWifiStack() {
+    s_wifi_initialized = false;
+    bool clean = true;
+    if (s_wifi_evt_inst != nullptr) {
+        if (esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                  s_wifi_evt_inst) == ESP_OK) {
+            s_wifi_evt_inst = nullptr;
+        } else {
+            clean = false;
+        }
     }
+    if (s_ip_evt_inst != nullptr) {
+        if (esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                  s_ip_evt_inst) == ESP_OK) {
+            s_ip_evt_inst = nullptr;
+        } else {
+            clean = false;
+        }
+    }
+    if (s_netif != nullptr) {
+        // A timed-out init may still have initialized the remote C5.
+        esp_wifi_scan_stop();
+        esp_wifi_stop();
+        const auto err = esp_wifi_deinit();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT) {
+            ESP_LOGW(TAG, "WiFi cleanup failed: %s", esp_err_to_name(err));
+            clean = false;
+        }
+        if (clean) {
+            esp_netif_destroy_default_wifi(s_netif);
+            s_netif = nullptr;
+        }
+    }
+    return clean;
+}
 
-    wifi_mode_t mode_before = WIFI_MODE_NULL;
-    const esp_err_t mode_err = esp_wifi_get_mode(&mode_before);
-    s_wifi_station_was_active =
-        (mode_err == ESP_OK && mode_before != WIFI_MODE_NULL);
-    if (s_wifi_station_was_active) {
-        WifiStation::GetInstance().Stop();
-    }
+bool WifiInitForTest() {
+    if (s_wifi_initialized) return true;
+    if (!CleanupWifiStack()) return false;
+
+    auto& station = WifiStation::GetInstance();
+    s_wifi_station_was_active = s_wifi_station_was_active || station.IsStarted();
+    if (!station.Stop()) return false;
+    if (station.PrepareHostedWifi() != ESP_OK) return false;
 
     if (s_evt_group == nullptr) {
         s_evt_group = xEventGroupCreate();
+        if (s_evt_group == nullptr) return false;
     } else {
         xEventGroupClearBits(s_evt_group, 0xFFFFFF);
     }
 
-    esp_err_t err = esp_netif_init();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_netif_init failed: %d", err);
-        return false;
-    }
+    auto err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %d", err);
-        return false;
-    }
-
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     s_netif = esp_netif_create_default_wifi_sta();
-    if (s_netif == nullptr) {
-        ESP_LOGE(TAG, "create wifi netif failed");
-        return false;
-    }
+    if (s_netif == nullptr) return false;
 
+    auto fail = [](esp_err_t error) {
+        ESP_LOGW(TAG, "WiFi initialization failed: %s", esp_err_to_name(error));
+        CleanupWifiStack();
+        return false;
+    };
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = false;
     err = esp_wifi_init(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_init failed: %d", err);
-        return false;
-    }
-
+    if (err != ESP_OK) return fail(err);
     err = esp_event_handler_instance_register(
-        WIFI_EVENT, ESP_EVENT_ANY_ID, &WifiEvtHandler, nullptr,
-        &s_wifi_evt_inst);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "wifi handler register failed: %d", err);
-    }
+        WIFI_EVENT, ESP_EVENT_ANY_ID, &WifiEvtHandler, nullptr, &s_wifi_evt_inst);
+    if (err != ESP_OK) return fail(err);
     err = esp_event_handler_instance_register(
-        IP_EVENT, IP_EVENT_STA_GOT_IP, &WifiEvtHandler, nullptr,
-        &s_ip_evt_inst);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ip handler register failed: %d", err);
-    }
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+        IP_EVENT, IP_EVENT_STA_GOT_IP, &WifiEvtHandler, nullptr, &s_ip_evt_inst);
+    if (err != ESP_OK) return fail(err);
+    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) return fail(err);
+    err = esp_wifi_start();
+    if (err != ESP_OK) return fail(err);
 
     s_wifi_initialized = true;
-    ESP_LOGI(TAG, "wifi stack initialized for test");
+    ESP_LOGI(TAG, "WiFi stack initialized");
     return true;
 }
 
 void WifiTeardownForTest() {
-    if (!s_wifi_initialized) {
-        return;
-    }
-
-    esp_wifi_scan_stop();
-    esp_wifi_disconnect();
-
-    if (s_wifi_evt_inst != nullptr) {
-        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                              s_wifi_evt_inst);
-        s_wifi_evt_inst = nullptr;
-    }
-    if (s_ip_evt_inst != nullptr) {
-        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                              s_ip_evt_inst);
-        s_ip_evt_inst = nullptr;
-    }
-
-    esp_wifi_stop();
-    esp_wifi_deinit();
-    if (s_netif != nullptr) {
-        esp_netif_destroy(s_netif);
-        s_netif = nullptr;
-    }
-    s_wifi_initialized = false;
-
+    if (!CleanupWifiStack()) return;
     if (s_wifi_station_was_active) {
-        WifiStation::GetInstance().Start();
+        if (!WifiStation::GetInstance().Start()) {
+            ESP_LOGW(TAG, "WiFi station restore failed; remaining offline");
+        }
     }
     s_wifi_station_was_active = false;
-    ESP_LOGI(TAG, "wifi stack torn down");
 }
 
 void SetRescanEnabled(bool enabled) {

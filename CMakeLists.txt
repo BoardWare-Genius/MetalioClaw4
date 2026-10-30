@@ -9,6 +9,12 @@ set(PROJECT_VER "2.0.51")
 # Add this line to disable the specific warning
 add_compile_options(-Wno-missing-field-initializers)
 
+# Component Manager 2.4.10 leaks missing Kconfig symbols from its advisory
+# update check into the active build (e.g. esp_video 2.5 vs locked 2.3).
+# Keep resolving/validating dependencies, but build with dependencies.lock
+# without running the separate latest-version check.
+set(ENV{IDF_COMPONENT_CHECK_NEW_VERSION} "0")
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
 

@@ -51,6 +51,7 @@
 #include "sd_card_screen/sd_card_screen.h"
 #include "theme_screen/theme_screen.h"
 #include "info_screen/info_screen.h"
+#include "control_center_screen/control_center_screen.h"
 #include "theme_manager.h"
 #include "wifi_required_dialog.h"
 
@@ -763,6 +764,14 @@ void LaunchSettings(screen_lifecycle_cb_t lifecycle_cb) {
     }
 }
 
+void LaunchControlCenter(screen_lifecycle_cb_t lifecycle_cb) {
+    lv_obj_t* old_scr = lv_screen_active();
+    lv_obj_t* app = ControlCenterScreen::Create();
+    screen_attach_lifecycle(app, lifecycle_cb);
+    lv_screen_load(app);
+    if (old_scr != nullptr && old_scr != app) lv_obj_delete_async(old_scr);
+}
+
 void LaunchInfo(screen_lifecycle_cb_t lifecycle_cb) {
     lv_obj_t* old_scr = lv_screen_active();
     lv_obj_t* app = InfoScreen::Create();
@@ -809,6 +818,7 @@ void info_lifecycle_cb(screen_lifecycle_event_t event) {
 // 主题图标，资源 ic_app_home_themeN_magnet.spng 缺失时该格会显示为空。
 // name 存 zh-CN msgid（源文案）；显示时用 I18n::T(entry.name)。
 constexpr AppEntry kApps[] = {
+    {"control_center", "智能控制台", LaunchControlCenter, ControlCenterScreen::LifecycleCallback, false},
     {"chat",           "聊天",     LaunchChat,          chat_lifecycle_cb,          true},
     {"wifi",           "网络配置", LaunchWifi,          wifi_lifecycle_cb,          false},
     {"digital_people", "数字人",   LaunchDigitalPeople, digital_people_lifecycle_cb, true},
@@ -1061,8 +1071,30 @@ lv_obj_t* CreateAppCell(lv_obj_t* parent, const AppEntry& entry, int idx) {
     lv_obj_set_style_transform_scale(cell, 262, LV_PART_MAIN | LV_STATE_PRESSED);
 
     // 路径取自 s_icon_paths[idx]：已按当前主题前缀解析好（ic_app_home_themeN_xxx）。
-    lv_obj_t* icon = lv_image_create(cell);
-    lv_image_set_src(icon, s_icon_paths[idx]);
+    lv_obj_t* icon;
+    if (entry.launch == LaunchControlCenter) {
+        // Draw the icon in LVGL so existing SD/resource images remain usable.
+        icon = lv_obj_create(cell);
+        screen_strip_obj_chrome(icon);
+        lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_color(icon, lv_color_hex(0x16364D), 0);
+        lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(icon, 28, 0);
+        for (int tile = 0; tile < 4; ++tile) {
+            auto* square = lv_obj_create(icon);
+            screen_strip_obj_chrome(square);
+            lv_obj_set_size(square, 30, 30);
+            lv_obj_set_pos(square, 26 + (tile % 2) * 46, 26 + (tile / 2) * 46);
+            lv_obj_set_style_bg_color(square, lv_color_hex(tile == 3 ? 0x5EE4B2 : 0x60A5FA), 0);
+            lv_obj_set_style_bg_opa(square, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(square, 8, 0);
+            lv_obj_remove_flag(square, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_remove_flag(square, LV_OBJ_FLAG_SCROLLABLE);
+        }
+    } else {
+        icon = lv_image_create(cell);
+        lv_image_set_src(icon, s_icon_paths[idx]);
+    }
     lv_obj_set_size(icon, kIconSize, kIconSize);
     lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);

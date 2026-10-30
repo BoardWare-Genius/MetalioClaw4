@@ -34,14 +34,10 @@ dependencies:
       type: service
     version: 2.4.1
   78/esp-wifi-connect:
-    component_hash: 073a6ab01086a76edc6f4c217cc1d3ea9120641b5c7f277557e0224a22565579
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.3'
+    dependencies: []
     source:
-      registry_url: https://components.espressif.com/
-      type: service
+      path: /Workspace/NVME/code/MetalioClaw4/components/78__esp-wifi-connect
+      type: local
     version: 2.6.2
   78/esp_lcd_nv3023:
     component_hash: 2d1c227ae9c8d7303c0be9b2f2b45e595169a2ccb3055aad93b5f1600110b236
@@ -1296,6 +1292,6 @@ direct_dependencies:
 - waveshare/esp_lcd_sh8601
 - waveshare/esp_lcd_st7703
 - waveshare/esp_lcd_touch_cst9217
-manifest_hash: 6653884a2f6f2916af8c25db495dbf6d47ab5b903fbe40615509a116f9167509
+manifest_hash: f53c1eb48873c5c45f09addfefdb110a26522ea532131dd37881620cfb3d3ca7
 target: esp32p4
 version: 2.0.0

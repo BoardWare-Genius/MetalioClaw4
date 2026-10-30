@@ -3658,6 +3658,391 @@
       "key": "C5_FW_READING_VERSION",
       "zh-CN": "正在读取版本…",
       "en-US": "Reading version…"
+    },
+    {
+      "key": "CONTROL_CENTER_00",
+      "zh-CN": "智能控制台",
+      "en-US": "Control Center"
+    },
+    {
+      "key": "CONTROL_CENTER_01",
+      "zh-CN": "设备网关",
+      "en-US": "Device gateway"
+    },
+    {
+      "key": "CONTROL_CENTER_02",
+      "zh-CN": "连接设置",
+      "en-US": "Connection settings"
+    },
+    {
+      "key": "CONTROL_CENTER_03",
+      "zh-CN": "电量",
+      "en-US": "Battery"
+    },
+    {
+      "key": "CONTROL_CENTER_04",
+      "zh-CN": "电池供电",
+      "en-US": "On battery"
+    },
+    {
+      "key": "CONTROL_CENTER_05",
+      "zh-CN": "电量暂不可用",
+      "en-US": "Battery unavailable"
+    },
+    {
+      "key": "CONTROL_CENTER_06",
+      "zh-CN": "执行中",
+      "en-US": "Working"
+    },
+    {
+      "key": "CONTROL_CENTER_07",
+      "zh-CN": "等待审批",
+      "en-US": "Awaiting approval"
+    },
+    {
+      "key": "CONTROL_CENTER_08",
+      "zh-CN": "等待回答",
+      "en-US": "Awaiting answer"
+    },
+    {
+      "key": "CONTROL_CENTER_10",
+      "zh-CN": "网关未连接",
+      "en-US": "Gateway disconnected"
+    },
+    {
+      "key": "CONTROL_CENTER_11",
+      "zh-CN": "尚未配置网关",
+      "en-US": "Gateway not configured"
+    },
+    {
+      "key": "CONTROL_CENTER_12",
+      "zh-CN": "正在连接网关",
+      "en-US": "Connecting to gateway"
+    },
+    {
+      "key": "CONTROL_CENTER_13",
+      "zh-CN": "网关已连接",
+      "en-US": "Gateway connected"
+    },
+    {
+      "key": "CONTROL_CENTER_14",
+      "zh-CN": "网关密钥不正确",
+      "en-US": "Incorrect console key"
+    },
+    {
+      "key": "CONTROL_CENTER_15",
+      "zh-CN": "网关返回格式不兼容",
+      "en-US": "Incompatible gateway response"
+    },
+    {
+      "key": "CONTROL_CENTER_16",
+      "zh-CN": "暂无设备连接网关",
+      "en-US": "No devices connected to the gateway"
+    },
+    {
+      "key": "CONTROL_CENTER_17",
+      "zh-CN": "连接网关后查看设备状态",
+      "en-US": "Connect a gateway to view devices"
+    },
+    {
+      "key": "CONTROL_CENTER_18",
+      "zh-CN": "连接设备网关",
+      "en-US": "Connect device gateway"
+    },
+    {
+      "key": "CONTROL_CENTER_19",
+      "zh-CN": "填写网关地址与控制台密钥",
+      "en-US": "Enter gateway URL and console key"
+    },
+    {
+      "key": "CONTROL_CENTER_20",
+      "zh-CN": "保存并连接",
+      "en-US": "Save and connect"
+    },
+    {
+      "key": "CONTROL_CENTER_21",
+      "zh-CN": "请输入有效地址和16至127位密钥",
+      "en-US": "Enter a valid URL and a 16–127 character key"
+    },
+    {
+      "key": "CONTROL_CENTER_23",
+      "zh-CN": "扬声器音量",
+      "en-US": "Speaker volume"
+    },
+    {
+      "key": "CONTROL_CENTER_24",
+      "zh-CN": "本机操作无需 nanoMuse，其他设备需连接网关",
+      "en-US": "Local controls work without nanoMuse. Other devices need a gateway."
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_00",
+      "zh-CN": "本地设备控制中心",
+      "en-US": "Local device control center"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_01",
+      "zh-CN": "设备总览",
+      "en-US": "Devices"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_02",
+      "zh-CN": "%d 台设备在线",
+      "en-US": "Online devices: %d"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_03",
+      "zh-CN": "%d 台在线 · 点击查看",
+      "en-US": "%d online · View devices"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_04",
+      "zh-CN": "连接网关后查看",
+      "en-US": "Connect gateway to view"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_05",
+      "zh-CN": "本机工具",
+      "en-US": "Local tools"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_06",
+      "zh-CN": "亮度、音量与常用工具",
+      "en-US": "Brightness, volume and tools"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_07",
+      "zh-CN": "连接设备",
+      "en-US": "Connected devices"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_08",
+      "zh-CN": "仅显示已连接网关的真实设备",
+      "en-US": "Live device sessions from your gateway"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_09",
+      "zh-CN": "对话设备",
+      "en-US": "Voice device"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_10",
+      "zh-CN": "暂未接入",
+      "en-US": "Not integrated"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_11",
+      "zh-CN": "状态未接入",
+      "en-US": "Status not integrated"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_12",
+      "zh-CN": "快捷操作",
+      "en-US": "Quick actions"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_13",
+      "zh-CN": "机器人",
+      "en-US": "Robot"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_14",
+      "zh-CN": "自动化",
+      "en-US": "Automation"
+    },
+    {
+      "key": "CONTROL_CENTER_CARDS_15",
+      "zh-CN": "未接入",
+      "en-US": "Not integrated"
+    },
+    {
+      "key": "CONTROL_CENTER_IDENTITY_00",
+      "zh-CN": "型号未上报",
+      "en-US": "Model not reported"
+    },
+    {
+      "key": "CONTROL_CENTER_IDENTITY_01",
+      "zh-CN": "会话",
+      "en-US": "Session"
+    },
+    {
+      "key": "CONTROL_CENTER_IDENTITY_02",
+      "zh-CN": "设备会话",
+      "en-US": "Device sessions"
+    },
+    {
+      "key": "CONTROL_CENTER_IDENTITY_03",
+      "zh-CN": "点击查看设备列表",
+      "en-US": "Tap to view devices"
+    },
+    {
+      "key": "CONTROL_CENTER_NANOMUSE_00",
+      "zh-CN": "服务在线",
+      "en-US": "Service online"
+    },
+    {
+      "key": "CONTROL_CENTER_NANOMUSE_01",
+      "zh-CN": "服务启动中",
+      "en-US": "Service starting"
+    },
+    {
+      "key": "CONTROL_CENTER_NANOMUSE_02",
+      "zh-CN": "服务离线",
+      "en-US": "Service offline"
+    },
+    {
+      "key": "CONTROL_CENTER_NANOMUSE_03",
+      "zh-CN": "nanoMuse 认证失败",
+      "en-US": "nanoMuse auth failed"
+    },
+    {
+      "key": "CONTROL_CENTER_NANOMUSE_04",
+      "zh-CN": "网关未配置 token",
+      "en-US": "Gateway token not set"
+    },
+    {
+      "key": "CONTROL_CENTER_NANOMUSE_05",
+      "zh-CN": "网关需更新",
+      "en-US": "Update gateway"
+    },
+    {
+      "key": "CONTROL_CENTER_NANOMUSE_06",
+      "zh-CN": "服务状态不兼容",
+      "en-US": "Service status incompatible"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_00",
+      "zh-CN": "请配置网关地址与对话密钥",
+      "en-US": "Set gateway URL and chat key"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_01",
+      "zh-CN": "正在连接对话服务",
+      "en-US": "Connecting to chat"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_02",
+      "zh-CN": "已连接，可以发送消息",
+      "en-US": "Connected. Ready to send"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_03",
+      "zh-CN": "正在发送",
+      "en-US": "Sending"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_04",
+      "zh-CN": "正在执行，等待回复",
+      "en-US": "Running, waiting for reply"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_05",
+      "zh-CN": "等待确认，请在 nanoMuse 网页处理",
+      "en-US": "Confirm on the nanoMuse webpage"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_06",
+      "zh-CN": "已取消，可以继续发送",
+      "en-US": "Cancelled. Ready to send"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_07",
+      "zh-CN": "对话断开，检查网络或设备密钥",
+      "en-US": "Disconnected: check network/device key"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_08",
+      "zh-CN": "对话超时，请重试",
+      "en-US": "Chat timed out. Please retry"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_09",
+      "zh-CN": "对话协议不兼容",
+      "en-US": "Incompatible chat protocol"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_10",
+      "zh-CN": "对话出错，请查看提示",
+      "en-US": "Chat error. See message below"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_11",
+      "zh-CN": "你",
+      "en-US": "You"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_12",
+      "zh-CN": "对话密钥",
+      "en-US": "Chat key"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_13",
+      "zh-CN": "填写 Gateway 的设备密钥，用于发送对话",
+      "en-US": "Enter the gateway device key for chat"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_14",
+      "zh-CN": "请输入16至127位设备密钥",
+      "en-US": "Enter a 16–127 character device key"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_15",
+      "zh-CN": "nanoMuse 对话",
+      "en-US": "nanoMuse chat"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_16",
+      "zh-CN": "关闭页面结束会话；取消不撤销已执行的操作",
+      "en-US": "Closing ends this session; cancel cannot undo actions"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_17",
+      "zh-CN": "输入消息",
+      "en-US": "Type a message"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_18",
+      "zh-CN": "尚未连接、正在执行或消息过长",
+      "en-US": "Not ready, busy or message too long"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_19",
+      "zh-CN": "你好",
+      "en-US": "Hello"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_20",
+      "zh-CN": "你好，请介绍一下你自己。",
+      "en-US": "Hello, please introduce yourself."
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_21",
+      "zh-CN": "继续",
+      "en-US": "Continue"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_22",
+      "zh-CN": "请继续。",
+      "en-US": "Please continue."
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_23",
+      "zh-CN": "键盘",
+      "en-US": "Keyboard"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_EXTRA_00",
+      "zh-CN": "发送",
+      "en-US": "Send"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_EXTRA_01",
+      "zh-CN": "提示",
+      "en-US": "Notice"
+    },
+    {
+      "key": "CONTROL_CENTER_CHAT_RECONNECT",
+      "zh-CN": "连接断开，重连后将开始新会话",
+      "en-US": "Disconnected. Reconnecting starts a new session."
     }
   ]
 }

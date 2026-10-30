@@ -4,6 +4,7 @@
 #include <nvs_flash.h>
 #include <driver/gpio.h>
 #include <esp_event.h>
+#include <esp_netif.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -17,6 +18,10 @@ extern "C" void app_main(void)
 {
     // Initialize the default event loop
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // DNS/MQTT may start even when the C5 is unavailable. Initialize lwIP
+    // independently of WiFi startup so offline fallback has a valid mailbox.
+    ESP_ERROR_CHECK(esp_netif_init());
 
     // Initialize NVS flash for WiFi configuration
     esp_err_t ret = nvs_flash_init();

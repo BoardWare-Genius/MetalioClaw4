@@ -16,6 +16,7 @@
 #include <wifi_configuration_ap.h>
 #include <wifi_station.h>
 #include "afsk_demod.h"
+#include "i18n.h"
 
 static const char* TAG = "WifiBoard";
 
@@ -107,7 +108,11 @@ void WifiBoard::StartNetwork() {
         notification += ssid;
         display->ShowNotification(notification.c_str(), 30000);
     });
-    wifi_station.Start();
+    if (!wifi_station.Start()) {
+        ESP_LOGE(TAG, "WiFi startup failed; local applications remain available");
+        Board::GetInstance().GetDisplay()->ShowNotification(I18n::T("WiFi 初始化失败"), 30000);
+        return;
+    }
 
     // Try to connect to WiFi, if failed, launch the WiFi configuration AP
     if (!wifi_station.WaitForConnected(60 * 1000)) {

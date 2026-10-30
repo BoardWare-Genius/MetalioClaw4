@@ -19,6 +19,7 @@
 #include <font_awesome.h>
 
 #include <ssid_manager.h>
+#include <wifi_station.h>
 #include <inttypes.h>
 
 #if CONFIG_ESP_HOSTED_ENABLED
@@ -538,7 +539,11 @@ void Application::Start() {
 
     // Check for new firmware version or get the MQTT broker address
     // Ota ota;
-    CheckNewVersion(ota);
+    if (board.GetBoardType() != "wifi" || WifiStation::GetInstance().IsConnected()) {
+        CheckNewVersion(ota);
+    } else {
+        ESP_LOGW(TAG, "WiFi unavailable; skipping online OTA check during startup");
+    }
     //加载唤醒词模型
     GetAudioService().SetModelsList(esp_srmodel_init("model"));
     GetAudioService().EnableWakeWordDetection(false);

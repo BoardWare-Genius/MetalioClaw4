@@ -447,94 +447,97 @@ void wifi_evt_handler(void* /*arg*/, esp_event_base_t base, int32_t id,
     }
 }
 
-// 初始化我们自己的 STA 栈。如果设备处于 WiFi 模式（WifiStation 已经在跑），
-// 先把它停掉避免事件回调互相打架。返回是否成功。
+// Release partially initialized stacks too, so a failed scan can be retried.
+bool CleanupWifiStack() {
+    s_wifi_initialized = false;
+    bool clean = true;
+    if (s_wifi_evt_inst != nullptr) {
+        if (esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                  s_wifi_evt_inst) == ESP_OK) {
+            s_wifi_evt_inst = nullptr;
+        } else {
+            clean = false;
+        }
+    }
+    if (s_ip_evt_inst != nullptr) {
+        if (esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                  s_ip_evt_inst) == ESP_OK) {
+            s_ip_evt_inst = nullptr;
+        } else {
+            clean = false;
+        }
+    }
+    if (s_netif != nullptr) {
+        // A timed-out init may still have initialized the remote C5.
+        esp_wifi_scan_stop();
+        esp_wifi_stop();
+        const auto err = esp_wifi_deinit();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT) {
+            ESP_LOGW(TAG, "WiFi cleanup failed: %s", esp_err_to_name(err));
+            clean = false;
+        }
+        if (clean) {
+            esp_netif_destroy_default_wifi(s_netif);
+            s_netif = nullptr;
+        }
+    }
+    return clean;
+}
+
 bool wifi_init_for_screen() {
     if (s_wifi_initialized) return true;
+    if (!CleanupWifiStack()) return false;
 
-    // 判断当前 wifi 栈是否已经在跑。esp_wifi_get_mode 在未初始化时会返回
-    // ESP_ERR_WIFI_NOT_INIT —— 那种情况下我们不能调用 WifiStation::Stop()
-    // （它内部走 ESP_ERROR_CHECK(esp_wifi_stop) 会触发 abort）。
-    wifi_mode_t mode_before = WIFI_MODE_NULL;
-    esp_err_t mode_err = esp_wifi_get_mode(&mode_before);
-    s_wifi_station_was_active = (mode_err == ESP_OK && mode_before != WIFI_MODE_NULL);
-    if (s_wifi_station_was_active) {
-        WifiStation::GetInstance().Stop();
-    }
+    auto& station = WifiStation::GetInstance();
+    s_wifi_station_was_active = s_wifi_station_was_active || station.IsStarted();
+    if (!station.Stop()) return false;
+    if (station.PrepareHostedWifi() != ESP_OK) return false;
 
     if (s_evt_group == nullptr) {
         s_evt_group = xEventGroupCreate();
+        if (s_evt_group == nullptr) return false;
     } else {
         xEventGroupClearBits(s_evt_group, 0xFFFFFF);
     }
 
-    // 注意：netif / event loop 已经在更早阶段初始化，这里只补一下 default sta。
-    esp_err_t err = esp_netif_init();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_netif_init failed: %d", err);
-        return false;
-    }
+    auto err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %d", err);
-        return false;
-    }
-
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     s_netif = esp_netif_create_default_wifi_sta();
-    if (s_netif == nullptr) {
-        ESP_LOGE(TAG, "create wifi netif failed");
-        return false;
-    }
+    if (s_netif == nullptr) return false;
 
+    auto fail = [](esp_err_t error) {
+        ESP_LOGW(TAG, "WiFi initialization failed: %s", esp_err_to_name(error));
+        CleanupWifiStack();
+        return false;
+    };
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = false;
     err = esp_wifi_init(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_init failed: %d", err);
-        return false;
-    }
-
+    if (err != ESP_OK) return fail(err);
     err = esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_evt_handler, nullptr, &s_wifi_evt_inst);
-    if (err != ESP_OK) ESP_LOGE(TAG, "wifi handler register failed: %d", err);
+    if (err != ESP_OK) return fail(err);
     err = esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_evt_handler, nullptr, &s_ip_evt_inst);
-    if (err != ESP_OK) ESP_LOGE(TAG, "ip handler register failed: %d", err);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (err != ESP_OK) return fail(err);
+    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) return fail(err);
+    err = esp_wifi_start();
+    if (err != ESP_OK) return fail(err);
 
     s_wifi_initialized = true;
-    ESP_LOGI(TAG, "wifi stack initialized for screen");
+    ESP_LOGI(TAG, "WiFi stack initialized");
     return true;
 }
 
 void wifi_teardown_for_screen() {
-    if (!s_wifi_initialized) return;
-    esp_wifi_scan_stop();
-    esp_wifi_disconnect();
-
-    if (s_wifi_evt_inst != nullptr) {
-        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_wifi_evt_inst);
-        s_wifi_evt_inst = nullptr;
-    }
-    if (s_ip_evt_inst != nullptr) {
-        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_evt_inst);
-        s_ip_evt_inst = nullptr;
-    }
-    esp_wifi_stop();
-    esp_wifi_deinit();
-    if (s_netif != nullptr) {
-        esp_netif_destroy(s_netif);
-        s_netif = nullptr;
-    }
-    s_wifi_initialized = false;
-    ESP_LOGI(TAG, "wifi stack torn down");
-
-    // 只有进入页面前 WifiStation 在跑时（即 WiFi 模式）才恢复它；ML307
-    // 模式下进入本页面前 wifi 栈本来就没起，不要无中生有起一份。
+    if (!CleanupWifiStack()) return;
     if (s_wifi_station_was_active) {
-        WifiStation::GetInstance().Start();
+        if (!WifiStation::GetInstance().Start()) {
+            ESP_LOGW(TAG, "WiFi station restore failed; remaining offline");
+        }
     }
     s_wifi_station_was_active = false;
 }
@@ -2389,8 +2392,7 @@ void NetworkScreen::LifecycleCallback(screen_lifecycle_event_t event) {
     } else {
         ESP_LOGI(TAG, "unload: network_screen");
         s_screen_active = false;
-        // 释放我们的 wifi 资源并恢复 WifiStation 接管。函数内部以
-        // s_wifi_initialized 短路；4G 模式下未初始化时是 no-op。
+        // 释放完整或部分初始化的 WiFi 栈，再恢复原有连接。
         wifi_teardown_for_screen();
     }
 }

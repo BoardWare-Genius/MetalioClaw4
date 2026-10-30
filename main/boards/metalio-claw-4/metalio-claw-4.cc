@@ -265,10 +265,13 @@ private:
         esp_lcd_dbi_io_config_t dbi_config = NV3051F_PANEL_IO_DBI_CONFIG();
         esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &panel_io_handle);
 
-        esp_lcd_dpi_panel_config_t dpi_config;
+        esp_lcd_dpi_panel_config_t dpi_config = {};
         // 1. 时钟源配置
         dpi_config.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
-        dpi_config.dpi_clock_freq_mhz = 48;  // NV3051F_DCLK_MHZ
+        // Match NV3051F_720_720_PANEL_60HZ_DPI_CONFIG: 36 MHz gives ~59 Hz.
+        // 48 MHz overdrives this timing to ~79 Hz and can starve DSI DMA
+        // when WiFi/UI rendering competes for PSRAM bandwidth (blue screen).
+        dpi_config.dpi_clock_freq_mhz = 36;
 
         // 2. 虚拟通道
         dpi_config.virtual_channel = 0;
@@ -297,6 +300,8 @@ private:
 
         // 7. 功能标志
         dpi_config.flags.use_dma2d = true;
+
+        ESP_LOGI(TAG, "NV3051F DPI: 36 MHz, RGB888, 3 frame buffers (~59 Hz)");
 
         nv3051f_vendor_config_t vendor_config = {
             .mipi_config =
@@ -344,7 +349,7 @@ private:
         esp_lcd_dbi_io_config_t dbi_config = FL7707N_PANEL_IO_DBI_CONFIG();
         esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &panel_io_handle);
 
-        esp_lcd_dpi_panel_config_t dpi_config;
+        esp_lcd_dpi_panel_config_t dpi_config = {};
         // 1. 时钟源配置
         dpi_config.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
         dpi_config.dpi_clock_freq_mhz = 48;  // FL7707N_DCLK_MHZ
